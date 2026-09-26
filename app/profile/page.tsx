@@ -40,7 +40,7 @@ export default function ProfilePage() {
   useEffect(() => {
     if (!user) return;
     Promise.all([
-      supabase.from("users").select("full_name, email, contact_number").eq("id", user.id).single(),
+      supabase.from("user_accounts").select("full_name, email, contact_number").eq("id", user.id).single(),
       supabase.from("orders")
         .select("id, order_type, status, payment_status, total_amount, created_at, order_items(id, menu_item_name, quantity, subtotal)")
         .eq("user_id", user.id)

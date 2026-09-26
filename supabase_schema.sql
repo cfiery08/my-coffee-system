@@ -210,10 +210,10 @@ create policy "Customers cancel own pending orders" on orders for update
   using (auth.uid() = user_id and status = 'pending')
   with check (auth.uid() = user_id and status = 'cancelled');
 create policy "Staff view all orders" on orders for select using (
-  exists (select 1 from user_accounts where id = auth.uid() and role in ('cashier', 'admin'))
+  exists (select 1 from user_accounts where id = auth.uid() and role in ('cashier', 'staff', 'admin'))
 );
 create policy "Staff update orders" on orders for update using (
-  exists (select 1 from user_accounts where id = auth.uid() and role in ('cashier', 'admin'))
+  exists (select 1 from user_accounts where id = auth.uid() and role in ('cashier', 'staff', 'admin'))
 );
 
 -- ORDER ITEMS
@@ -224,6 +224,14 @@ create policy "Customers create order items" on order_items for insert with chec
   exists (select 1 from orders where id = order_items.order_id and user_id = auth.uid())
 );
 create policy "Staff view all order items" on order_items for select using (
+  exists (select 1 from user_accounts where id = auth.uid() and role in ('cashier', 'staff', 'admin'))
+);
+
+-- Cashier can insert orders (POS dine-in)
+create policy "Cashier insert orders" on orders for insert with check (
+  exists (select 1 from user_accounts where id = auth.uid() and role in ('cashier', 'admin'))
+);
+create policy "Cashier insert order items" on order_items for insert with check (
   exists (select 1 from user_accounts where id = auth.uid() and role in ('cashier', 'admin'))
 );
 
@@ -232,7 +240,7 @@ create policy "Customers view own order history" on order_status_history for sel
   exists (select 1 from orders where id = order_status_history.order_id and user_id = auth.uid())
 );
 create policy "Staff manage order history" on order_status_history for all using (
-  exists (select 1 from user_accounts where id = auth.uid() and role in ('cashier', 'admin'))
+  exists (select 1 from user_accounts where id = auth.uid() and role in ('cashier', 'staff', 'admin'))
 );
 
 -- =============================================

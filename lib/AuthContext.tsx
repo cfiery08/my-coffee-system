@@ -12,7 +12,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   async function fetchRole(uid: string) {
-    const { data } = await supabase.from("users").select("role").eq("id", uid).single();
+    const { data } = await supabase.from("user_accounts").select("role").eq("id", uid).single();
     setRole(data?.role ?? "customer");
     setLoading(false);
   }

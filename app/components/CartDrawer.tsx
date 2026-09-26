@@ -40,7 +40,7 @@ export default function CartDrawer({ open, onClose }: Props) {
   // Load contact number and seed saved address from profile
   useEffect(() => {
     if (!open || !user) return;
-    supabase.from("users").select("contact_number").eq("id", user.id).single().then(({ data }) => {
+    supabase.from("user_accounts").select("contact_number").eq("id", user.id).single().then(({ data }) => {
       if (data?.contact_number) setContactNumber(data.contact_number);
     });
   }, [open, user]);

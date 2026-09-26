@@ -36,6 +36,7 @@ export default function MenuPage() {
         supabase.from("categories").select("id, name").eq("is_active", true).order("sort_order"),
         supabase.from("menu_items").select("id, name, description, price, image_url, category_id").eq("is_available", true),
       ]);
+
       setCategories(cats ?? []);
       setItems(menuItems ?? []);
       setLoading(false);

@@ -45,7 +45,7 @@ export default function Navbar() {
             src="/brewora_logo.png"
             alt="Brewora Logo"
             width={150}
-            height={54}
+            height={150}
             className="h-auto w-[150px] object-contain"
           />
         </Link>
@@ -75,9 +75,12 @@ export default function Navbar() {
                 )}
               </button>
 
-              {/* Dashboard link for staff */}
-              {(role === "admin" || role === "cashier") && (
-                <Link href="/dashboard" className="text-white hover:text-amber-400 text-sm font-medium transition-colors">
+              {/* Dashboard link for staff/admin — routes to correct portal */}
+              {(role === "admin" || role === "cashier" || role === "staff") && (
+                <Link
+                  href={role === "admin" ? "/admin" : role === "cashier" ? "/cashier" : "/staff"}
+                  className="text-white hover:text-amber-400 text-sm font-medium transition-colors"
+                >
                   Dashboard
                 </Link>
               )}

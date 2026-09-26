@@ -18,10 +18,16 @@ export default function LoginPage() {
     e.preventDefault();
     setError("");
     setLoading(true);
-    const { error: err } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error: err } = await supabase.auth.signInWithPassword({ email, password });
+    if (err) { setError(err.message); setLoading(false); return; }
+    // Fetch role and redirect accordingly
+    const { data: profile } = await supabase.from("user_accounts").select("role").eq("id", data.user.id).single();
     setLoading(false);
-    if (err) { setError(err.message); return; }
-    router.push("/");
+    const role = profile?.role ?? "customer";
+    if (role === "admin") router.push("/admin");
+    else if (role === "cashier") router.push("/cashier");
+    else if (role === "staff") router.push("/staff");
+    else router.push("/");
   }
 
   return (
