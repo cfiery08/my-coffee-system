@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
+import SystemIcon from "@/app/components/SystemIcon";
 
 const ACCENT = "#7c4a1e";
 const peso = (n: number) => `₱${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
@@ -36,17 +37,17 @@ export default function CashierDashboard() {
       { data: monthOrders },
       { data: recentCompleted },
     ] = await Promise.all([
-      supabase.from("orders").select("*", { count: "exact", head: true }).eq("status", "pending").eq("order_type", "dine_in"),
-      supabase.from("orders").select("*", { count: "exact", head: true }).eq("status", "preparing").eq("order_type", "dine_in"),
-      supabase.from("orders").select("*", { count: "exact", head: true }).eq("status", "ready").eq("order_type", "dine_in"),
-      supabase.from("orders").select("status, total_amount").eq("order_type", "dine_in").gte("created_at", todayStart.toISOString()),
-      supabase.from("orders").select("total_amount").eq("order_type", "dine_in").gte("created_at", weekStart.toISOString()).neq("status", "cancelled"),
-      supabase.from("orders").select("total_amount").eq("order_type", "dine_in").gte("created_at", monthStart.toISOString()).neq("status", "cancelled"),
-      supabase.from("orders").select("id, total_amount, created_at, table_number, user_accounts(full_name)").eq("order_type", "dine_in").eq("status", "delivered").order("created_at", { ascending: false }).limit(5),
+      supabase.from("orders").select("*", { count: "exact", head: true }).eq("order_source", "store").eq("status", "pending"),
+      supabase.from("orders").select("*", { count: "exact", head: true }).eq("order_source", "store").eq("status", "preparing"),
+      supabase.from("orders").select("*", { count: "exact", head: true }).eq("order_source", "store").eq("status", "ready"),
+      supabase.from("orders").select("status, total_amount").eq("order_source", "store").gte("created_at", todayStart.toISOString()),
+      supabase.from("orders").select("total_amount").eq("order_source", "store").gte("created_at", weekStart.toISOString()).neq("status", "cancelled"),
+      supabase.from("orders").select("total_amount").eq("order_source", "store").gte("created_at", monthStart.toISOString()).neq("status", "cancelled"),
+      supabase.from("orders").select("id, total_amount, created_at, table_number, user_accounts!orders_user_id_fkey(full_name)").eq("order_source", "store").eq("status", "completed").order("created_at", { ascending: false }).limit(5),
     ]);
 
     const todayArr = todayOrders ?? [];
-    const completed_today = todayArr.filter((o: { status: string }) => o.status === "delivered").length;
+    const completed_today = todayArr.filter((o: { status: string }) => o.status === "completed").length;
     const sales_today = todayArr.filter((o: { status: string }) => o.status !== "cancelled").reduce((s: number, o: { total_amount: number }) => s + (o.total_amount || 0), 0);
     const sales_week = (weekOrders ?? []).reduce((s: number, o: { total_amount: number }) => s + (o.total_amount || 0), 0);
     const sales_month = (monthOrders ?? []).reduce((s: number, o: { total_amount: number }) => s + (o.total_amount || 0), 0);
@@ -59,16 +60,16 @@ export default function CashierDashboard() {
   if (loading) return <div style={{ textAlign: "center", padding: "80px", color: "#a89080" }}>Loading...</div>;
 
   const cards = [
-    { label: "Pending", value: data.pending, sub: "Dine-in waiting", bg: "#fff8f0", icon: "📋" },
-    { label: "Preparing", value: data.preparing, sub: "Being made now", bg: "#fff7ed", icon: "👨‍🍳" },
-    { label: "Ready to Serve", value: data.ready, sub: "Ready at the counter", bg: "#f0fdf4", icon: "🛎️" },
-    { label: "Served Today", value: data.completed_today, sub: "Completed dine-in", bg: "#f5f0ff", icon: "✅" },
+    { label: "Pending", value: data.pending, sub: "Store orders waiting", bg: "#fff8f0", icon: <SystemIcon name="clock" size={22} /> },
+    { label: "Preparing", value: data.preparing, sub: "Being made now", bg: "#fff7ed", icon: <SystemIcon name="chef" size={22} /> },
+    { label: "Ready to Serve", value: data.ready, sub: "Ready at the counter", bg: "#f0fdf4", icon: <SystemIcon name="bell" size={22} /> },
+    { label: "Completed Today", value: data.completed_today, sub: "Completed store orders", bg: "#f5f0ff", icon: <SystemIcon name="check" size={22} /> },
   ];
 
   const salesCards = [
-    { label: "Dine-In Sales Today", value: peso(data.sales_today), icon: "💰" },
-    { label: "This Week", value: peso(data.sales_week), icon: "📅" },
-    { label: "This Month", value: peso(data.sales_month), icon: "📊" },
+    { label: "Dine-In Sales Today", value: peso(data.sales_today), icon: <SystemIcon name="dollar" size={26} /> },
+    { label: "This Week", value: peso(data.sales_week), icon: <SystemIcon name="calendar" size={26} /> },
+    { label: "This Month", value: peso(data.sales_month), icon: <SystemIcon name="chart" size={26} /> },
   ];
 
   return (
@@ -123,12 +124,12 @@ export default function CashierDashboard() {
           <div style={{ fontWeight: 800, fontSize: "16px", color: "#1a1008", marginBottom: "16px" }}>Today&apos;s Dine-In Summary</div>
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             {[
-              { label: "Total Dine-In Orders", value: data.total_today, color: "#1a1008", icon: "📦" },
-              { label: "Sales Today", value: peso(data.sales_today), color: ACCENT, icon: "💰" },
-              { label: "Pending", value: data.pending, color: "#f59e0b", icon: "⏳" },
-              { label: "Preparing", value: data.preparing, color: "#f97316", icon: "👨‍🍳" },
-              { label: "Ready to Serve", value: data.ready, color: "#22c55e", icon: "🛎️" },
-              { label: "Served", value: data.completed_today, color: "#8b5cf6", icon: "✅" },
+              { label: "Total Store Orders", value: data.total_today, color: "#1a1008", icon: <SystemIcon name="package" size={16} /> },
+              { label: "Sales Today", value: peso(data.sales_today), color: ACCENT, icon: <SystemIcon name="dollar" size={16} /> },
+              { label: "Pending", value: data.pending, color: "#f59e0b", icon: <SystemIcon name="clock" size={16} /> },
+              { label: "Preparing", value: data.preparing, color: "#f97316", icon: <SystemIcon name="chef" size={16} /> },
+              { label: "Ready to Serve", value: data.ready, color: "#22c55e", icon: <SystemIcon name="bell" size={16} /> },
+              { label: "Served", value: data.completed_today, color: "#8b5cf6", icon: <SystemIcon name="check" size={16} /> },
             ].map((row) => (
               <div key={row.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: "#faf7f4", borderRadius: "8px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
@@ -140,7 +141,7 @@ export default function CashierDashboard() {
             ))}
           </div>
           <Link href="/cashier/orders" style={{ display: "block", marginTop: "16px", background: ACCENT, color: "#fff", borderRadius: "8px", padding: "12px", textAlign: "center", fontWeight: 800, fontSize: "14px", textDecoration: "none" }}>
-            View Dine-In Orders →
+            View Store Orders →
           </Link>
         </div>
 
@@ -151,7 +152,7 @@ export default function CashierDashboard() {
             <Link href="/cashier/order-history" style={{ fontSize: "12px", color: ACCENT, fontWeight: 700, textDecoration: "none" }}>View All</Link>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {recent.length === 0 && <p style={{ color: "#aaa", fontSize: "13px" }}>No completed dine-in orders yet.</p>}
+            {recent.length === 0 && <p style={{ color: "#aaa", fontSize: "13px" }}>No completed store orders yet.</p>}
             {recent.map((o) => (
               <div key={o.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #f1ebe5" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>

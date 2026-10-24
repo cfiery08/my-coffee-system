@@ -8,7 +8,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { useEffect, useState } from "react";
 import CartDrawer from "./CartDrawer";
 
-export default function Navbar() {
+export default function Navbar({ keepGuestView = false }: { keepGuestView?: boolean }) {
   const pathname = usePathname();
   const router = useRouter();
   const { session, role } = useAuth();
@@ -16,14 +16,19 @@ export default function Navbar() {
   const [cartOpen, setCartOpen] = useState(false);
 
   async function handleLogout() {
+    if (!window.confirm("Are you sure you want to log out?")) return;
     await supabase.auth.signOut();
     router.push("/");
   }
 
+  // The login screen can keep its signed-out navbar stable while Supabase
+  // updates the session and the account role is being resolved.
+  const showSignedInView = Boolean(session) && !keepGuestView;
+
   const links = [
     { label: "Home", href: "/" },
     { label: "Menu", href: "/menu" },
-    ...(session ? [{ label: "My Orders", href: "/orders" }] : []),
+    ...(showSignedInView ? [{ label: "My Orders", href: "/orders" }] : []),
     { label: "About us", href: "/about" },
     { label: "Contact us", href: "/contact" },
   ];
@@ -45,8 +50,8 @@ export default function Navbar() {
             src="/brewora_logo.png"
             alt="Brewora Logo"
             width={150}
-            height={150}
-            className="h-auto w-[150px] object-contain"
+            height={50}
+            style={{ width: 150, height: 50, objectFit: "contain" }}
           />
         </Link>
 
@@ -61,7 +66,7 @@ export default function Navbar() {
         </ul>
 
         <div className="flex items-center gap-4">
-          {session ? (
+          {showSignedInView ? (
             <>
               {/* Cart */}
               <button onClick={() => setCartOpen(true)} className="relative text-white hover:text-amber-400 transition-colors">
@@ -76,9 +81,9 @@ export default function Navbar() {
               </button>
 
               {/* Dashboard link for staff/admin — routes to correct portal */}
-              {(role === "admin" || role === "cashier" || role === "staff") && (
+              {(role === "admin" || role === "cashier" || role === "barista" || role === "staff") && (
                 <Link
-                  href={role === "admin" ? "/admin" : role === "cashier" ? "/cashier" : "/staff"}
+                  href={role === "admin" ? "/admin" : role === "cashier" ? "/cashier" : role === "barista" ? "/store-orders" : "/staff"}
                   className="text-white hover:text-amber-400 text-sm font-medium transition-colors"
                 >
                   Dashboard

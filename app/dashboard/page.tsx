@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Navbar from "../components/Navbar";
 import { supabase } from "@/lib/supabaseClient";
@@ -8,23 +8,46 @@ import { useAuth } from "@/lib/AuthContext";
 type OrderItem = { id: string; menu_item_name: string; quantity: number; unit_price: number; subtotal: number };
 type Order = {
   id: string;
+  order_source: "online" | "store";
   order_type: string;
   status: string;
+  payment_method: string | null;
   payment_status: string;
   total_amount: number;
   table_number: string | null;
+  customer_name: string | null;
   notes: string | null;
   created_at: string;
   user_accounts: { full_name: string; email: string } | null;
   order_items: OrderItem[];
 };
 
-const STATUS_FLOW: Record<string, string> = {
+const STATUS_FLOW_PICKUP: Record<string, string> = {
   pending: "confirmed",
   confirmed: "preparing",
   preparing: "ready",
   ready: "delivered",
 };
+const STATUS_FLOW_DELIVERY: Record<string, string> = {
+  pending: "confirmed",
+  confirmed: "preparing",
+  preparing: "ready",
+  ready: "out_for_delivery",
+  out_for_delivery: "delivered",
+};
+
+function getNextStatus(order: Order) {
+  if (order.order_source === "store") {
+    return order.status === "pending" ? "preparing" : order.status === "preparing" ? "completed" : undefined;
+  }
+  const flow = order.order_type === "delivery" ? STATUS_FLOW_DELIVERY : STATUS_FLOW_PICKUP;
+  return flow[order.status];
+}
+
+function isCashOnDelivery(order: Order) {
+  const method = (order.payment_method ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return order.order_type.trim().toLowerCase() !== "dine_in" && (!method || ["cash", "cod", "cash_on_delivery"].includes(method));
+}
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "bg-yellow-100 text-yellow-800",
@@ -32,6 +55,7 @@ const STATUS_COLORS: Record<string, string> = {
   preparing: "bg-orange-100 text-orange-800",
   ready: "bg-green-100 text-green-800",
   delivered: "bg-gray-100 text-gray-600",
+  completed: "bg-gray-100 text-gray-600",
   cancelled: "bg-red-100 text-red-700",
 };
 
@@ -41,6 +65,7 @@ export default function DashboardPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [fetching, setFetching] = useState(true);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "online" | "store">("all");
   const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
@@ -49,47 +74,56 @@ export default function DashboardPage() {
     }
   }, [user, role, loading, router]);
 
+  const fetchOrders = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("orders")
+      .select("id, order_source, order_type, status, payment_method, payment_status, total_amount, table_number, customer_name, notes, created_at, user_accounts!orders_user_id_fkey(full_name, email), order_items(id, menu_item_name, quantity, unit_price, subtotal)")
+      .order("created_at", { ascending: false });
+    if (error) console.error("Could not load dashboard orders:", error.message);
+    else setOrders((data as unknown as Order[]) ?? []);
+    setFetching(false);
+  }, []);
+
   useEffect(() => {
     if (!user || (role !== "admin" && role !== "cashier")) return;
-    fetchOrders();
-
-    const channel = supabase
-      .channel("orders-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, fetchOrders)
+    void fetchOrders();
+    const channel = supabase.channel("dashboard-orders-live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, () => { void fetchOrders(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "order_items" }, () => { void fetchOrders(); })
       .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
-  }, [user, role]);
-
-  async function fetchOrders() {
-    const { data } = await supabase
-      .from("orders")
-      .select("id, order_type, status, payment_status, total_amount, table_number, notes, created_at, user_accounts(full_name, email), order_items(id, menu_item_name, quantity, unit_price, subtotal)")
-      .order("created_at", { ascending: false });
-    setOrders((data as unknown as Order[]) ?? []);
-    setFetching(false);
-  }
+    return () => { void supabase.removeChannel(channel); };
+  }, [user, role, fetchOrders]);
 
   async function advanceStatus(order: Order) {
-    const next = STATUS_FLOW[order.status];
+    const next = getNextStatus(order);
     if (!next) return;
-    await supabase.from("orders").update({ status: next }).eq("id", order.id);
+    await supabase.from("orders").update({
+      status: next,
+      ...(next === "delivered" && isCashOnDelivery(order) ? { payment_status: "paid" } : {}),
+    }).eq("id", order.id);
     await supabase.from("order_status_history").insert({ order_id: order.id, status: next, changed_by: user!.id });
-    fetchOrders();
+    void fetchOrders();
   }
 
   async function cancelOrder(order: Order) {
-    await supabase.from("orders").update({ status: "cancelled" }).eq("id", order.id);
+    const cancellationReason = order.order_source === "store" ? window.prompt("Reason for cancelling this store order:")?.trim() : "";
+    if (order.order_source === "store" && !cancellationReason) return;
+    const { error } = await supabase.from("orders").update({ status: "cancelled", ...(order.order_source === "store" ? { cancellation_reason: cancellationReason } : {}) }).eq("id", order.id);
+    if (error) { window.alert(error.message); return; }
     await supabase.from("order_status_history").insert({ order_id: order.id, status: "cancelled", changed_by: user!.id });
-    fetchOrders();
+    void fetchOrders();
   }
 
   async function markPaid(order: Order) {
+    if (isCashOnDelivery(order)) return;
     await supabase.from("orders").update({ payment_status: "paid" }).eq("id", order.id);
-    fetchOrders();
+    void fetchOrders();
   }
 
-  const filtered = statusFilter === "all" ? orders : orders.filter((o) => o.status === statusFilter);
+  const filtered = orders.filter((order) =>
+    (statusFilter === "all" || order.status === statusFilter) &&
+    (sourceFilter === "all" || order.order_source === sourceFilter)
+  );
 
   if (loading || fetching) {
     return (
@@ -112,9 +146,17 @@ export default function DashboardPage() {
           <span className="text-sm text-gray-500 capitalize">{role}</span>
         </div>
 
+        <div className="flex gap-2 flex-wrap mb-4" aria-label="Filter by order source">
+          {(["all", "online", "store"] as const).map((source) => (
+            <button key={source} onClick={() => setSourceFilter(source)} className={`px-4 py-1.5 rounded-full text-xs font-medium border capitalize ${sourceFilter === source ? "bg-[#3b2a1d] border-[#3b2a1d] text-white" : "bg-white border-gray-300 text-gray-600 hover:border-amber-600"}`}>
+              {source === "all" ? "All sources" : source}
+            </button>
+          ))}
+        </div>
+
         {/* Status filter tabs */}
         <div className="flex gap-2 flex-wrap mb-6">
-          {["all", "pending", "confirmed", "preparing", "ready", "delivered", "cancelled"].map((s) => (
+          {["all", "pending", "confirmed", "preparing", "ready", "delivered", "completed", "cancelled"].map((s) => (
             <button
               key={s}
               onClick={() => setStatusFilter(s)}
@@ -145,10 +187,11 @@ export default function DashboardPage() {
                         {order.status}
                       </span>
                       <span className="text-xs text-gray-400 capitalize">{order.order_type.replace("_", " ")}</span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${order.order_source === "store" ? "bg-purple-100 text-purple-800" : "bg-indigo-50 text-indigo-700"}`}>{order.order_source}</span>
                       {order.table_number && <span className="text-xs text-gray-400">Table {order.table_number}</span>}
                     </div>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      {order.user_accounts?.full_name ?? order.user_accounts?.email ?? "Guest"} · {new Date(order.created_at).toLocaleString()}
+                      {order.user_accounts?.full_name ?? order.user_accounts?.email ?? order.customer_name ?? (order.order_source === "store" ? "Walk-in customer" : "Guest")} · {new Date(order.created_at).toLocaleString()}
                     </p>
                   </div>
 
@@ -162,7 +205,7 @@ export default function DashboardPage() {
 
                     {/* Actions */}
                     <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
-                      {order.payment_status === "unpaid" && (
+                      {order.payment_status === "unpaid" && !isCashOnDelivery(order) && (
                         <button
                           onClick={() => markPaid(order)}
                           className="text-xs px-3 py-1.5 rounded-full border border-green-500 text-green-600 hover:bg-green-50 transition-colors font-medium"
@@ -170,13 +213,13 @@ export default function DashboardPage() {
                           Mark Paid
                         </button>
                       )}
-                      {STATUS_FLOW[order.status] && (
+                      {getNextStatus(order) && (role === "admin" || order.order_source === "online") && (
                         <button
                           onClick={() => advanceStatus(order)}
                           className="text-xs px-3 py-1.5 rounded-full text-white font-medium hover:opacity-90 transition-opacity capitalize"
                           style={{ backgroundColor: "#7c4a1e" }}
                         >
-                          → {STATUS_FLOW[order.status]}
+                          → {getNextStatus(order)!.replaceAll("_", " ")}
                         </button>
                       )}
                       {order.status !== "cancelled" && order.status !== "delivered" && (
@@ -212,7 +255,7 @@ export default function DashboardPage() {
                       ))}
                     </div>
                     {order.notes && (
-                      <p className="text-xs text-gray-500 mt-3 italic">Note: {order.notes}</p>
+                      <p className="text-xs text-gray-500 mt-3 italic whitespace-pre-line break-words">Note: {order.notes}</p>
                     )}
                   </div>
                 )}

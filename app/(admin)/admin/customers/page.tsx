@@ -1,9 +1,11 @@
 "use client";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import SystemIcon from "@/app/components/SystemIcon";
 
 const ACCENT = "#7c4a1e";
-type Customer = { id: string; full_name: string; email: string; contact_number: string; created_at: string; order_count: number; total_spent: number };
+type Customer = { id: string; full_name: string; email: string; contact_number: string; created_at: string; is_active: boolean; order_count: number; total_spent: number };
+type CustomerAccountRow = { id: string; full_name: string | null; email: string | null; contact_number: string | null; created_at: string | null; is_active: boolean };
 type Order = { id: string; status: string; total_amount: number; created_at: string; order_type: string; order_items: { menu_item_name: string; quantity: number }[] };
 
 export default function AdminCustomersPage() {
@@ -13,22 +15,31 @@ export default function AdminCustomersPage() {
   const [sort, setSort] = useState<"joined" | "orders" | "spent">("joined");
   const [ordersModal, setOrdersModal] = useState<{ customer: Customer; orders: Order[] } | null>(null);
   const [ordersLoading, setOrdersLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [updatingCustomerId, setUpdatingCustomerId] = useState<string | null>(null);
 
   async function load() {
-    const { data: users } = await supabase.from("user_accounts").select("id, full_name, email, contact_number, created_at").eq("role", "customer").order("created_at", { ascending: false });
-    if (!users) { setLoading(false); return; }
-    const enriched = await Promise.all(users.map(async (u) => {
+    const { data: users, error } = await supabase.rpc("admin_list_existing_customer_accounts");
+    if (error) {
+      setLoadError(`${error.message}. Run supabase_customer_management_migration.sql in Supabase SQL Editor.`);
+      setCustomers([]);
+      setLoading(false);
+      return;
+    }
+    const accountRows = (users ?? []) as CustomerAccountRow[];
+    const enriched = await Promise.all(accountRows.map(async (u) => {
       const { count } = await supabase.from("orders").select("*", { count: "exact", head: true }).eq("user_id", u.id);
       const { data: rev } = await supabase.from("orders").select("total_amount").eq("user_id", u.id).neq("status", "cancelled");
       const total_spent = (rev ?? []).reduce((s: number, o: { total_amount: number }) => s + (o.total_amount || 0), 0);
-      return { ...u, order_count: count ?? 0, total_spent };
+      return { ...u, full_name: u.full_name ?? "", email: u.email ?? "", contact_number: u.contact_number ?? "", created_at: u.created_at ?? new Date(0).toISOString(), order_count: count ?? 0, total_spent };
     }));
     setCustomers(enriched);
+    setLoadError("");
     setLoading(false);
   }
 
   useEffect(() => {
-    load();
+    queueMicrotask(() => { void load(); });
     const ch = supabase.channel("admin-customers")
       .on("postgres_changes", { event: "*", schema: "public", table: "user_accounts" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, load)
@@ -44,10 +55,19 @@ export default function AdminCustomersPage() {
     setOrdersLoading(false);
   }
 
-  async function handleDelete(c: Customer) {
-    if (!confirm(`Delete ${c.full_name}'s account? This cannot be undone.`)) return;
-    await supabase.from("user_accounts").delete().eq("id", c.id);
-    load();
+  async function toggleCustomerActive(c: Customer) {
+    const nextActive = !c.is_active;
+    const verb = nextActive ? "activate" : "deactivate";
+    if (!confirm(`Are you sure you want to ${verb} ${c.full_name || c.email}'s account?`)) return;
+    setUpdatingCustomerId(c.id);
+    setLoadError("");
+    const { error } = await supabase.rpc("admin_set_customer_active", {
+      p_customer_id: c.id,
+      p_is_active: nextActive,
+    });
+    if (error) setLoadError(error.message);
+    else await load();
+    setUpdatingCustomerId(null);
   }
 
   const filtered = customers
@@ -72,12 +92,14 @@ export default function AdminCustomersPage() {
         </div>
       </div>
 
+      {loadError && <div role="alert" style={{ marginBottom: 16, padding: "12px 14px", borderRadius: 8, background: "#fff0f0", color: "#b42318", fontSize: 13 }}>{loadError}</div>}
+
       {/* Summary cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "16px", marginBottom: "24px" }}>
         {[
-          { label: "Total Customers", value: customers.length, icon: "👥", color: "#22c55e" },
-          { label: "Total Orders", value: totalOrders, icon: "📦", color: "#3b82f6" },
-          { label: "Total Revenue", value: `₱${totalRevenue.toLocaleString("en", { minimumFractionDigits: 2 })}`, icon: "💰", color: ACCENT },
+          { label: "Total Customers", value: customers.length, icon: <SystemIcon name="users" size={28} />, color: "#22c55e" },
+          { label: "Total Orders", value: totalOrders, icon: <SystemIcon name="package" size={28} />, color: "#3b82f6" },
+          { label: "Total Revenue", value: `₱${totalRevenue.toLocaleString("en", { minimumFractionDigits: 2 })}`, icon: <SystemIcon name="dollar" size={28} />, color: ACCENT },
         ].map((s) => (
           <div key={s.label} style={{ background: "#fff", borderRadius: "12px", padding: "20px 22px", boxShadow: "0 1px 6px rgba(0,0,0,0.07)", borderTop: `3px solid ${s.color}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
@@ -104,13 +126,13 @@ export default function AdminCustomersPage() {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#faf7f4", borderBottom: "1px solid #ede8e3" }}>
-              {["Customer", "Email", "Joined", "Orders", "Total Spent", "Actions"].map((h) => (
+              {["Customer", "Email", "Joined", "Status", "Orders", "Total Spent", "Actions"].map((h) => (
                 <th key={h} style={{ padding: "13px 16px", textAlign: "left", fontSize: "11px", fontWeight: 800, color: "#a89080", textTransform: "uppercase", letterSpacing: "0.5px" }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 && <tr><td colSpan={6} style={{ textAlign: "center", padding: "40px", color: "#aaa" }}>No customers found.</td></tr>}
+            {filtered.length === 0 && <tr><td colSpan={7} style={{ textAlign: "center", padding: "40px", color: "#aaa" }}>{loadError ? "Customer list could not be loaded." : "No customers found."}</td></tr>}
             {filtered.map((c) => (
               <tr key={c.id} style={{ borderBottom: "1px solid #faf7f4" }}>
                 <td style={{ padding: "14px 16px" }}>
@@ -123,12 +145,13 @@ export default function AdminCustomersPage() {
                 </td>
                 <td style={{ padding: "14px 16px", fontSize: "13px", color: "#555" }}>{c.email}</td>
                 <td style={{ padding: "14px 16px", fontSize: "13px", color: "#a89080" }}>{new Date(c.created_at).toLocaleDateString()}</td>
+                <td style={{ padding: "14px 16px" }}><span style={{ display: "inline-block", background: c.is_active ? "#ecfdf3" : "#fff0f0", color: c.is_active ? "#16803c" : "#b42318", padding: "4px 9px", borderRadius: 12, fontSize: 11, fontWeight: 750 }}>{c.is_active ? "Active" : "Inactive"}</span></td>
                 <td style={{ padding: "14px 16px" }}><span style={{ background: "#eff6ff", color: "#3b82f6", padding: "3px 10px", borderRadius: "10px", fontSize: "12px", fontWeight: 700 }}>{c.order_count} order{c.order_count !== 1 ? "s" : ""}</span></td>
                 <td style={{ padding: "14px 16px", fontWeight: 700, fontSize: "14px", color: "#1a1008" }}>₱{c.total_spent.toLocaleString("en", { minimumFractionDigits: 2 })}</td>
                 <td style={{ padding: "14px 16px" }}>
                   <div style={{ display: "flex", gap: "6px" }}>
                     <button onClick={() => viewOrders(c)} style={{ background: "#f1ebe5", border: "none", borderRadius: "6px", padding: "7px 12px", fontSize: "12px", fontWeight: 600, color: "#555", cursor: "pointer" }}>Orders</button>
-                    <button onClick={() => handleDelete(c)} style={{ background: "#fff0f0", border: "none", borderRadius: "6px", padding: "7px 12px", fontSize: "12px", fontWeight: 600, color: "#ef4444", cursor: "pointer" }}>Delete</button>
+                    <button onClick={() => toggleCustomerActive(c)} disabled={updatingCustomerId === c.id} style={{ background: c.is_active ? "#fff7ed" : "#ecfdf3", border: "none", borderRadius: "6px", padding: "7px 12px", fontSize: "12px", fontWeight: 650, color: c.is_active ? "#c2410c" : "#16803c", cursor: updatingCustomerId === c.id ? "wait" : "pointer", opacity: updatingCustomerId === c.id ? 0.65 : 1 }}>{updatingCustomerId === c.id ? "Updating…" : c.is_active ? "Deactivate" : "Activate"}</button>
                   </div>
                 </td>
               </tr>
@@ -146,7 +169,7 @@ export default function AdminCustomersPage() {
                 <h2 style={{ fontSize: "17px", fontWeight: 900, color: "#1a1008", margin: 0 }}>{ordersModal.customer.full_name}&apos;s Orders</h2>
                 <p style={{ fontSize: "12px", color: "#a89080", margin: "2px 0 0" }}>{ordersModal.customer.email}</p>
               </div>
-              <button onClick={() => setOrdersModal(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#a89080", fontSize: "20px" }}>✕</button>
+              <button onClick={() => setOrdersModal(null)} aria-label="Close customer orders" style={{ background: "none", border: "none", cursor: "pointer", color: "#a89080", display: "flex" }}><SystemIcon name="x" size={20} /></button>
             </div>
             <div style={{ overflowY: "auto", flex: 1 }}>
               {ordersLoading ? (

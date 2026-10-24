@@ -1,6 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
+import SystemIcon from "@/app/components/SystemIcon";
 
 const ACCENT = "#7c4a1e";
 
@@ -42,19 +44,22 @@ export default function CashierMenuReferencePage() {
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", marginBottom: "20px" }}>
         <div>
-          <h1 style={{ fontSize: "20px", fontWeight: 900, color: "#1a1008", margin: 0 }}>Menu Reference</h1>
-          <p style={{ color: "#a89080", fontSize: "13px", marginTop: "4px" }}>View all menu items and availability</p>
+          <h1 style={{ fontSize: "20px", fontWeight: 900, color: "#1a1008", margin: 0 }}>Menu</h1>
+          <p style={{ color: "#a89080", fontSize: "13px", marginTop: "4px" }}>Browse available items, then start a new in-store order.</p>
         </div>
+        <Link href="/cashier/pos" style={{ display: "inline-flex", alignItems: "center", gap: "7px", background: ACCENT, color: "#fff", borderRadius: "8px", padding: "10px 14px", fontWeight: 800, fontSize: "12px", textDecoration: "none", whiteSpace: "nowrap" }}>
+          <SystemIcon name="package" size={15} /> New Order
+        </Link>
       </div>
 
       {/* Summary */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "16px", marginBottom: "24px" }}>
         {[
-          { label: "Total Items", value: items.length, icon: "☕", color: ACCENT },
-          { label: "Available", value: availableCount, icon: "✅", color: "#22c55e" },
-          { label: "Unavailable", value: unavailableCount, icon: "❌", color: "#ef4444" },
+          { label: "Total Items", value: items.length, icon: <SystemIcon name="coffee" size={28} />, color: ACCENT },
+          { label: "Available", value: availableCount, icon: <SystemIcon name="check" size={28} />, color: "#22c55e" },
+          { label: "Unavailable", value: unavailableCount, icon: <SystemIcon name="x" size={28} />, color: "#ef4444" },
         ].map((s) => (
           <div key={s.label} style={{ background: "#fff", borderRadius: "12px", padding: "18px 20px", boxShadow: "0 1px 6px rgba(0,0,0,0.07)", borderTop: `3px solid ${s.color}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
@@ -100,13 +105,13 @@ export default function CashierMenuReferencePage() {
                   <div style={{ position: "relative", height: "140px", background: "#f1ebe5" }}>
                     {item.image_url
                       ? <img src={item.image_url} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                      : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "40px" }}>☕</div>
+                      : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}><SystemIcon name="coffee" size={40} /></div>
                     }
                     <div style={{ position: "absolute", top: "8px", right: "8px", display: "flex", gap: "4px" }}>
                       <span style={{ fontSize: "10px", fontWeight: 800, padding: "3px 8px", borderRadius: "20px", background: item.is_available ? "#f0fdf4" : "#fff0f0", color: item.is_available ? "#22c55e" : "#ef4444" }}>
                         {item.is_available ? "Available" : "Unavailable"}
                       </span>
-                      {item.is_featured && <span style={{ fontSize: "10px", fontWeight: 800, padding: "3px 8px", borderRadius: "20px", background: "#fef3c7", color: "#d97706" }}>⭐ Featured</span>}
+                      {item.is_featured && <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "10px", fontWeight: 800, padding: "3px 8px", borderRadius: "20px", background: "#fef3c7", color: "#d97706" }}><SystemIcon name="star" size={12} /> Featured</span>}
                     </div>
                   </div>
                   <div style={{ padding: "14px 16px" }}>

@@ -1,0 +1,19 @@
+.backdrop{position:fixed;inset:0;z-index:500;background:rgba(24,18,13,.58);display:flex;justify-content:center;align-items:center;padding:20px}
+.dialog{width:min(480px,100%);max-height:calc(100vh - 40px);overflow:auto}
+.actions{display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px}
+.print,.close{border:0;border-radius:8px;padding:10px 15px;font-weight:750;cursor:pointer}
+.print{background:#70451f;color:white}.close{background:white;color:#4b3c30}
+.receipt{background:#fffdf9;color:#241b14;padding:30px 32px;box-shadow:0 18px 60px #0003;font-family:Arial,Helvetica,sans-serif}
+.brand{display:flex;align-items:center;justify-content:center;background:#28180e;border-radius:8px;padding:15px 12px}
+.logo{display:block;width:min(100%,270px);height:auto;object-fit:contain}
+.receiptTitle{text-align:center;font-size:11px;font-weight:800;letter-spacing:2px;color:#593719;margin:18px 0 14px}
+.rule{border-top:1px dashed #b9aa99;margin:14px 0}
+.meta{display:flex;justify-content:space-between;gap:12px;margin:9px 0;font-size:12px}
+.meta span{color:#76695d;flex-shrink:0}.meta strong{text-align:right;font-size:12px;overflow-wrap:anywhere}
+.itemsHead{display:flex;justify-content:space-between;color:#8b7761;font-size:9px;letter-spacing:1px;margin-bottom:9px}
+.item{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin:12px 0;font-size:12px}
+.item>div{display:flex;flex-direction:column;gap:4px}.item small{color:#76695d;font-size:11px}.item>strong{white-space:nowrap}
+.total{display:flex;justify-content:space-between;align-items:center;margin:14px 0;font-weight:800}.total strong{font-size:20px;color:#593719}
+.note{font-size:11px;white-space:pre-wrap;color:#64564a;border-top:1px dashed #b9aa99;padding-top:12px}
+.thanks{text-align:center;font-family:Georgia,serif;line-height:1.6;font-size:13px;color:#70451f;margin-top:22px}
+@media print{@page{size:80mm auto;margin:5mm}html,body{width:80mm!important;min-height:0!important;margin:0!important;padding:0!important;overflow:visible!important}body *{visibility:hidden!important}.backdrop,.backdrop *{visibility:visible!important}.backdrop{position:fixed!important;inset:0 auto auto 0!important;display:block!important;width:70mm!important;height:auto!important;min-height:0!important;margin:0!important;padding:0!important;overflow:visible!important;background:white!important}.dialog{width:70mm!important;max-height:none!important;margin:0!important;overflow:visible!important}.actions{display:none!important}.receipt{box-sizing:border-box;width:70mm!important;margin:0!important;padding:0!important;box-shadow:none;color:#000}.brand{background:#28180e!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.total strong,.thanks{color:#000}}

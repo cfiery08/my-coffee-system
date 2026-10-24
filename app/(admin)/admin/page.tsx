@@ -15,7 +15,7 @@ const STATUS_LABEL: Record<string, string> = {
   ready: "Ready", delivered: "Delivered", cancelled: "Cancelled",
 };
 
-type RecentOrder = { id: string; status: string; total_amount: number; created_at: string; user_accounts: { full_name: string } | null; order_items: { id: string }[] };
+type RecentOrder = { id: string; status: string; total_amount: number; created_at: string; customer_name: string | null; user_accounts: { full_name: string } | null; order_items: { id: string }[] };
 type PopularItem = { menu_item_id: string; menu_item_name: string; count: number };
 
 export default function AdminDashboard() {
@@ -25,6 +25,7 @@ export default function AdminDashboard() {
   const [recentOrders, setRecentOrders] = useState<RecentOrder[]>([]);
   const [popularItems, setPopularItems] = useState<PopularItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [customerLoadError, setCustomerLoadError] = useState("");
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -32,34 +33,37 @@ export default function AdminDashboard() {
     return () => clearInterval(ci);
   }, []);
 
-  useEffect(() => {
-    load();
-    const channel = supabase.channel("admin-dash")
-      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, load)
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, []);
-
   async function load() {
     const [
       { count: orderCount },
       { data: revenueData },
-      { count: customerCount },
+      { data: customerAccounts, error: customerError },
       { count: menuCount },
       { data: orders },
       { data: orderItems },
     ] = await Promise.all([
       supabase.from("orders").select("*", { count: "exact", head: true }),
       supabase.from("orders").select("total_amount").neq("status", "cancelled"),
-      supabase.from("user_accounts").select("*", { count: "exact", head: true }).eq("role", "customer"),
+      supabase.rpc("admin_list_existing_customer_accounts"),
       supabase.from("menu_items").select("*", { count: "exact", head: true }),
-      supabase.from("orders").select("id, status, total_amount, created_at, user_accounts(full_name), order_items(id)").order("created_at", { ascending: false }).limit(6),
+      supabase.from("orders").select("id, status, total_amount, customer_name, created_at, order_items(id)").order("created_at", { ascending: false }).limit(6),
       supabase.from("order_items").select("menu_item_id, menu_item_name"),
     ]);
 
     const revenue = (revenueData ?? []).reduce((s: number, o: { total_amount: number }) => s + (o.total_amount || 0), 0);
-    setStats({ orders: orderCount ?? 0, revenue, customers: customerCount ?? 0, menuItems: menuCount ?? 0 });
-    setRecentOrders((orders as unknown as RecentOrder[]) ?? []);
+    if (customerError) {
+      setCustomerLoadError(`Could not load customer count: ${customerError.message}. Run supabase_customer_management_migration.sql in Supabase SQL Editor.`);
+    } else {
+      setCustomerLoadError("");
+    }
+    setStats({ orders: orderCount ?? 0, revenue, customers: customerError ? 0 : (customerAccounts ?? []).length, menuItems: menuCount ?? 0 });
+    const recentRows = (orders as unknown as RecentOrder[]) ?? [];
+    const { data: profiles } = recentRows.length
+      ? await supabase.rpc("get_order_customer_profiles", { order_ids: recentRows.map((order) => order.id) })
+      : { data: [] };
+    const profileRows = (profiles ?? []) as { order_id: string; full_name: string; email: string }[];
+    const profileByOrderId = new Map<string, { full_name: string; email: string }>(profileRows.map((profile) => [profile.order_id, { full_name: profile.full_name, email: profile.email }]));
+    setRecentOrders(recentRows.map((order) => ({ ...order, user_accounts: profileByOrderId.get(order.id) ?? null })));
 
     // Status counts
     const sc: Record<string, number> = {};
@@ -91,6 +95,15 @@ export default function AdminDashboard() {
     setPopularItems(popular);
     setLoading(false);
   }
+
+  useEffect(() => {
+    queueMicrotask(() => { void load(); });
+    const channel = supabase.channel("admin-dash")
+      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "user_accounts" }, load)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
 
   if (loading) return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "60vh", flexDirection: "column", gap: "16px" }}>
@@ -135,6 +148,7 @@ export default function AdminDashboard() {
     <div style={{ display: "flex", flexDirection: "column", gap: "22px" }}>
 
       {/* Stat Cards */}
+      {customerLoadError && <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 8, padding: "10px 12px", fontSize: 13 }}>{customerLoadError}</div>}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "18px" }}>
         {statCards.map((s) => (
           <div key={s.label} style={{ background: "#fff", borderRadius: "12px", padding: "20px 22px", boxShadow: "0 1px 4px rgba(0,0,0,0.06)" }}>
@@ -220,7 +234,7 @@ export default function AdminDashboard() {
                 return (
                   <tr key={o.id} style={{ borderBottom: "1px solid #faf7f4" }}>
                     <td style={{ padding: "11px 10px", fontSize: "13px", fontWeight: 700, color: "#374151" }}>#{o.id.slice(0, 8).toUpperCase()}</td>
-                    <td style={{ padding: "11px 10px", fontSize: "13px", color: "#374151" }}>{o.user_accounts?.full_name || "Guest"}</td>
+                    <td style={{ padding: "11px 10px", fontSize: "13px", color: "#374151" }}>{o.customer_name?.trim() || o.user_accounts?.full_name?.trim() || "Guest"}</td>
                     <td style={{ padding: "11px 10px", fontSize: "13px", color: "#6b7280" }}>{o.order_items?.length || 0} item{o.order_items?.length !== 1 ? "s" : ""}</td>
                     <td style={{ padding: "11px 10px", fontSize: "13px", fontWeight: 600, color: "#374151" }}>{peso(o.total_amount)}</td>
                     <td style={{ padding: "11px 10px" }}><span style={{ fontSize: "11px", fontWeight: 700, padding: "4px 10px", borderRadius: "20px", background: sc + "20", color: sc, textTransform: "capitalize" }}>{o.status}</span></td>

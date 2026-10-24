@@ -5,12 +5,14 @@ import Link from "next/link";
 import Image from "next/image";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/AuthContext";
+import SystemIcon from "@/app/components/SystemIcon";
 
 const NAV = [
   { href: "/staff", label: "Dashboard", icon: <HomeIcon /> },
   { href: "/staff/orders", label: "Online Orders", icon: <OrderIcon /> },
   { href: "/staff/order-history", label: "Order History", icon: <HistoryIcon /> },
-  { href: "/staff/menu-reference", label: "Menu Reference", icon: <MenuIcon /> },
+  { href: "/staff/inventory", label: "Inventory Check", icon: <InventoryIcon /> },
+  { href: "/staff/menu-ingredients", label: "Menu Ingredients", icon: <RecipeIcon /> },
 ];
 
 const ACCENT = "#7c4a1e";
@@ -42,11 +44,12 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
 
   async function fetchPending() {
     const { count } = await supabase.from("orders").select("*", { count: "exact", head: true })
-      .eq("status", "pending").in("order_type", ["pickup", "delivery"]);
+      .eq("order_source", "online").eq("status", "pending").in("order_type", ["pickup", "delivery"]);
     setPendingCount(count ?? 0);
   }
 
   async function handleLogout() {
+    if (!window.confirm("Are you sure you want to log out?")) return;
     await supabase.auth.signOut();
     router.push("/");
   }
@@ -112,7 +115,7 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
           <div style={{ position: "relative", zIndex: 2, padding: "14px 14px" }}>
             <div style={{ color: "#fff", fontWeight: 800, fontSize: "12px", lineHeight: 1.4, marginBottom: "2px" }}>Great coffee.</div>
             <div style={{ color: "#fff", fontWeight: 800, fontSize: "12px", lineHeight: 1.4, marginBottom: "4px" }}>Happy customers.</div>
-            <div style={{ color: ACCENT, fontSize: "16px" }}>☕</div>
+            <SystemIcon name="coffee" size={16} style={{ color: ACCENT }} />
           </div>
         </div>
       </aside>
@@ -123,7 +126,7 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
         <header style={{ background: "#fff", borderBottom: "1px solid #ede8e3", padding: "0 28px", height: "64px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 50 }}>
           <div>
             <div style={{ fontWeight: 800, fontSize: "17px", color: "#1a1008" }}>{pageLabel}</div>
-            <div style={{ fontSize: "12px", color: "#a89080", marginTop: "1px" }}>Welcome back, {profile?.full_name?.split(" ")[0] || "Staff"}! 👋</div>
+            <div style={{ fontSize: "12px", color: "#a89080", marginTop: "1px" }}>Welcome back, {profile?.full_name?.split(" ")[0] || "Staff"}!</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <div style={{ width: "40px", height: "40px", borderRadius: "50%", background: ACCENT, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: "15px", flexShrink: 0 }}>
@@ -150,5 +153,6 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
 function HomeIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>; }
 function OrderIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg>; }
 function HistoryIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>; }
-function MenuIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>; }
+function InventoryIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg>; }
+function RecipeIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01" strokeWidth="3"/></svg>; }
 function LogoutIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>; }

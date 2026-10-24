@@ -5,6 +5,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import Navbar from "@/app/components/Navbar";
+import { normalizePhilippineMobile, sanitizePhoneInput } from "@/lib/phone";
 
 function EyeIcon() {
   return (
@@ -30,6 +31,8 @@ export default function SignupPage() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
+  const [awaitingCode, setAwaitingCode] = useState(false);
+  const [otp, setOtp] = useState("");
   const router = useRouter();
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -44,21 +47,55 @@ export default function SignupPage() {
       setError("Passwords do not match.");
       return;
     }
+    const contactNumber = normalizePhilippineMobile(form.contact);
+    if (!contactNumber) {
+      setError("Enter a valid Philippine mobile number, such as 09XXXXXXXXX or +639XXXXXXXXX.");
+      return;
+    }
     setLoading(true);
     const { error: signUpError } = await supabase.auth.signUp({
       email: form.email,
       password: form.password,
       options: {
-        data: { full_name: form.fullName, contact_number: form.contact, password: form.password },
+        data: { full_name: form.fullName, contact_number: contactNumber, password: form.password },
       },
     });
     setLoading(false);
     if (signUpError) {
       setError(signUpError.message);
     } else {
-      setSuccess("Account created successfully! Redirecting to login...");
-      setTimeout(() => router.push("/login"), 1500);
+      setAwaitingCode(true);
+      setSuccess("We sent a verification code to your email.");
     }
+  }
+
+  async function handleVerify(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+    setLoading(true);
+    const { error: verifyError } = await supabase.auth.verifyOtp({
+      email: form.email,
+      token: otp.trim(),
+      type: "signup",
+    });
+    setLoading(false);
+    if (verifyError) {
+      setError(verifyError.message);
+      return;
+    }
+    setSuccess("Your email is verified and your account is ready. Redirecting to Brewora…");
+    setTimeout(() => router.push("/"), 1800);
+  }
+
+  async function handleResendCode() {
+    setError("");
+    setSuccess("");
+    setLoading(true);
+    const { error: resendError } = await supabase.auth.resend({ email: form.email, type: "signup" });
+    setLoading(false);
+    if (resendError) setError(resendError.message);
+    else setSuccess("A new verification code has been sent.");
   }
 
   return (
@@ -83,10 +120,10 @@ export default function SignupPage() {
             <Image src="/logo.png" alt="Logo" width={100} height={100} className="rounded-full object-cover mb-1" />
             <Image src="/breworatext.png" alt="Brewora" width={200} height={60} className="object-contain mb-4" style={{ marginLeft: "18px" }} />
             <h2 className="text-white font-bold text-3xl uppercase tracking-widest mb-3" style={{ fontFamily: "Georgia, serif" }}>
-              Welcome Back!
+              Your Coffee Story Starts Here
             </h2>
             <p className="text-white/80 text-sm leading-relaxed">
-              Good coffee. Good days. Let&apos;s keep<br />the good moments brewing
+              Create an account and make every<br />coffee moment yours.
             </p>
           </div>
         </div>
@@ -94,13 +131,42 @@ export default function SignupPage() {
         {/* Right — form panel */}
         <div className="w-full md:w-1/2 flex items-center justify-center bg-white px-10 py-10 overflow-y-auto">
           <div className="w-full max-w-sm">
-            <h1 className="text-2xl font-bold text-gray-900 mb-1">Create your account</h1>
-            <p className="text-gray-500 text-sm mb-6">Fill in the details to get started.</p>
+            <h1 className="text-2xl font-bold text-gray-900 mb-1">{awaitingCode ? "Verify your email" : "Create your account"}</h1>
+            <p className="text-gray-500 text-sm mb-6">{awaitingCode ? `Enter the code we sent to ${form.email}.` : "Fill in the details to get started."}</p>
 
             {error && <p className="text-red-500 text-sm mb-4">{error}</p>}
             {success && <p className="text-green-600 text-sm mb-4">{success}</p>}
 
-            <form onSubmit={handleSignup}>
+            {awaitingCode ? (
+              <form onSubmit={handleVerify}>
+                <div className="mb-5">
+                  <label htmlFor="signup-otp" className="block text-sm font-medium text-gray-700 mb-1">Verification code</label>
+                  <input
+                    id="signup-otp"
+                    name="otp"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="[0-9]*"
+                    maxLength={8}
+                    value={otp}
+                    onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
+                    placeholder="Enter the code from your email"
+                    required
+                    className="w-full border border-gray-300 rounded px-3 py-2.5 text-sm text-gray-700 placeholder-gray-400 focus:outline-none focus:border-amber-600 tracking-widest"
+                  />
+                </div>
+                <button type="submit" disabled={loading} className="w-full py-3 rounded text-white text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-60" style={{ backgroundColor: "#7c4a1e" }}>
+                  {loading ? "Verifying..." : "Verify email"}
+                </button>
+                <button type="button" onClick={handleResendCode} disabled={loading} className="w-full mt-3 py-2 text-sm font-semibold disabled:opacity-60" style={{ color: "#7c4a1e" }}>
+                  Resend code
+                </button>
+                <button type="button" onClick={() => { setAwaitingCode(false); setOtp(""); setError(""); setSuccess(""); }} className="w-full py-2 text-sm text-gray-500">
+                  Back to sign up
+                </button>
+              </form>
+            ) : <form onSubmit={handleSignup}>
 
               {/* Full Name */}
               <div className="mb-4">
@@ -122,9 +188,11 @@ export default function SignupPage() {
                 <input
                   name="contact"
                   type="tel"
-                  placeholder="Enter your contact number"
+                  inputMode="tel"
+                  maxLength={13}
+                  placeholder="09XXXXXXXXX or +639XXXXXXXXX"
                   value={form.contact}
-                  onChange={handleChange}
+                  onChange={(e) => setForm({ ...form, contact: sanitizePhoneInput(e.target.value) })}
                   required
                   className="w-full border border-gray-300 rounded px-3 py-2.5 text-sm text-gray-700 placeholder-gray-400 focus:outline-none focus:border-amber-600"
                 />
@@ -199,7 +267,7 @@ export default function SignupPage() {
                   Log in
                 </Link>
               </p>
-            </form>
+            </form>}
           </div>
         </div>
 

@@ -1,10 +1,13 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import SystemIcon from "@/app/components/SystemIcon";
 
 const ACCENT = "#7c4a1e";
 type Category = { id: string; name: string; sort_order: number; is_active: boolean };
-type MenuItem = { id: string; name: string; description: string; price: number; image_url: string | null; is_available: boolean; is_featured: boolean; category_id: string; categories: { name: string } | null };
+type MenuItem = { id: string; name: string; description: string; price: number; image_url: string | null; is_available: boolean; is_featured: boolean; category_id: string; categories: { name: string } | null; orderAvailability: "available" | "unavailable" | "recipe_needed" };
+type RecipeLink = { menu_item_id: string; inventory_id: number; quantity_required: number };
+type IngredientStock = { inventory_id: number; quantity: number; status: "available" | "unavailable" | "low_stock" };
 
 const EMPTY_ITEM = { name: "", description: "", price: "", is_available: true, is_featured: false, category_id: "" };
 const EMPTY_CAT = { name: "", sort_order: 0, is_active: true };
@@ -14,8 +17,10 @@ export default function AdminMenuPage() {
   const [items, setItems] = useState<MenuItem[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pageError, setPageError] = useState("");
   const [search, setSearch] = useState("");
   const [filterCat, setFilterCat] = useState("");
+  const [categoryFilterOpen, setCategoryFilterOpen] = useState(false);
 
   const [modal, setModal] = useState<"add" | "edit" | null>(null);
   const [form, setForm] = useState<typeof EMPTY_ITEM & { id?: string }>(EMPTY_ITEM);
@@ -30,29 +35,51 @@ export default function AdminMenuPage() {
   const [catDeleteId, setCatDeleteId] = useState<string | null>(null);
 
   async function load() {
-    const [{ data: m }, { data: c }] = await Promise.all([
+    const [{ data: m, error: menuError }, { data: c, error: categoryError }, { data: recipeLinks, error: recipeError }, { data: ingredientStock, error: stockError }] = await Promise.all([
       supabase.from("menu_items").select("id, name, description, price, image_url, is_available, is_featured, category_id, categories(name)").order("name"),
       supabase.from("categories").select("id, name, sort_order, is_active").order("sort_order"),
+      supabase.from("menu_ingredients").select("menu_item_id, inventory_id, quantity_required"),
+      supabase.from("inventory").select("inventory_id, quantity, status"),
     ]);
-    setItems((m as unknown as MenuItem[]) ?? []);
+    if (menuError || categoryError || recipeError || stockError) setPageError(menuError?.message || categoryError?.message || recipeError?.message || stockError?.message || "Unable to load menu data.");
+    else setPageError("");
+    const links = (recipeLinks ?? []) as RecipeLink[];
+    const stockById = new Map(((ingredientStock ?? []) as IngredientStock[]).map((ingredient) => [ingredient.inventory_id, ingredient]));
+    const enrichedItems = ((m as unknown as Omit<MenuItem, "orderAvailability">[]) ?? []).map((item) => {
+      const itemLinks = links.filter((link) => link.menu_item_id === item.id);
+      const unavailable = itemLinks.some((link) => {
+        const stock = stockById.get(link.inventory_id);
+        return !stock || stock.status === "unavailable" || Number(stock.quantity) < Number(link.quantity_required);
+      });
+      const orderAvailability: MenuItem["orderAvailability"] = !item.is_available || unavailable ? "unavailable" : itemLinks.length === 0 ? "recipe_needed" : "available";
+      return { ...item, orderAvailability };
+    });
+    setItems(enrichedItems);
     setCategories(c ?? []);
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    void load();
+    const channel = supabase.channel("admin-menu-availability")
+      .on("postgres_changes", { event: "*", schema: "public", table: "inventory" }, () => { void load(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "menu_ingredients" }, () => { void load(); })
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, []);
 
   async function handleSave() {
     if (!form.name.trim() || !form.price || !form.category_id) { alert("Name, price, and category are required."); return; }
+    setPageError("");
     setSaving(true);
     let image_url = null;
     if (imageFile) {
       const ext = imageFile.name.split(".").pop();
       const path = `menu/${Date.now()}.${ext}`;
       const { error: upErr } = await supabase.storage.from("menu-images").upload(path, imageFile, { upsert: true });
-      if (!upErr) {
-        const { data: urlData } = supabase.storage.from("menu-images").getPublicUrl(path);
-        image_url = urlData.publicUrl;
-      }
+      if (upErr) { setPageError(`Image upload failed: ${upErr.message}`); setSaving(false); return; }
+      const { data: urlData } = supabase.storage.from("menu-images").getPublicUrl(path);
+      image_url = urlData.publicUrl;
     }
     const payload: Record<string, unknown> = {
       name: form.name.trim(), description: form.description,
@@ -62,35 +89,45 @@ export default function AdminMenuPage() {
     };
     if (image_url) payload.image_url = image_url;
 
-    if (modal === "edit" && form.id) {
-      await supabase.from("menu_items").update(payload).eq("id", form.id);
-    } else {
-      await supabase.from("menu_items").insert(payload);
-    }
-    setSaving(false); setModal(null); load();
+    const { error } = modal === "edit" && form.id
+      ? await supabase.from("menu_items").update(payload).eq("id", form.id)
+      : await supabase.from("menu_items").insert(payload);
+    setSaving(false);
+    if (error) { setPageError(`Could not save menu item: ${error.message}`); return; }
+    setModal(null);
+    await load();
   }
 
   async function handleDelete() {
     if (!deleteId) return;
-    await supabase.from("menu_items").delete().eq("id", deleteId);
-    setDeleteId(null); load();
+    setPageError("");
+    const { error } = await supabase.from("menu_items").delete().eq("id", deleteId);
+    if (error) { alert(`Could not delete menu item: ${error.message}`); return; }
+    setDeleteId(null);
+    await load();
   }
 
   async function handleCatSave() {
     if (!catForm.name.trim()) { alert("Category name is required."); return; }
+    setPageError("");
     setCatSaving(true);
-    if (catModal === "edit" && catForm.id) {
-      await supabase.from("categories").update({ name: catForm.name, sort_order: catForm.sort_order, is_active: catForm.is_active }).eq("id", catForm.id);
-    } else {
-      await supabase.from("categories").insert({ name: catForm.name, sort_order: catForm.sort_order, is_active: catForm.is_active });
-    }
-    setCatSaving(false); setCatModal(null); load();
+    const values = { name: catForm.name.trim(), sort_order: catForm.sort_order, is_active: catForm.is_active };
+    const { error } = catModal === "edit" && catForm.id
+      ? await supabase.from("categories").update(values).eq("id", catForm.id)
+      : await supabase.from("categories").insert(values);
+    setCatSaving(false);
+    if (error) { setPageError(`Could not save category: ${error.message}`); return; }
+    setCatModal(null);
+    await load();
   }
 
   async function handleCatDelete() {
     if (!catDeleteId) return;
-    await supabase.from("categories").delete().eq("id", catDeleteId);
-    setCatDeleteId(null); load();
+    setPageError("");
+    const { error } = await supabase.from("categories").delete().eq("id", catDeleteId);
+    if (error) { alert(`Could not delete category: ${error.message}`); return; }
+    setCatDeleteId(null);
+    await load();
   }
 
   const filtered = items.filter((i) =>
@@ -112,12 +149,13 @@ export default function AdminMenuPage() {
           : <button onClick={() => { setCatForm(EMPTY_CAT); setCatModal("add"); }} style={btnAccent}>+ Add Category</button>
         }
       </div>
+      {pageError && <div role="alert" style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "8px", background: "#fff0f0", color: "#b91c1c", fontSize: "13px" }}>{pageError}</div>}
 
       {/* Tabs */}
       <div style={{ display: "flex", gap: "4px", marginBottom: "20px", background: "#f1ebe5", borderRadius: "10px", padding: "4px", width: "fit-content" }}>
         {(["items", "categories"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)} style={{ padding: "8px 20px", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer", background: tab === t ? "#fff" : "transparent", color: tab === t ? ACCENT : "#a89080", boxShadow: tab === t ? "0 1px 4px rgba(0,0,0,0.08)" : "none" }}>
-            {t === "items" ? "☕ Menu Items" : "🏷️ Categories"}
+            {t === "items" ? <><SystemIcon name="coffee" size={15} /> Menu Items</> : <><SystemIcon name="category" size={15} /> Categories</>}
           </button>
         ))}
       </div>
@@ -125,18 +163,28 @@ export default function AdminMenuPage() {
       {/* Items Tab */}
       {tab === "items" && (
         <>
-          <div style={{ display: "flex", gap: "12px", marginBottom: "20px" }}>
-            <input placeholder="Search items..." value={search} onChange={(e) => setSearch(e.target.value)} style={inp} />
-            <select value={filterCat} onChange={(e) => setFilterCat(e.target.value)} style={sel}>
-              <option value="">All Categories</option>
-              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
+          <div style={{ marginBottom: "20px", maxWidth: "420px", position: "relative" }}>
+            <div style={{ position: "relative" }}>
+              <input aria-label="Search menu items" placeholder="Search items..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inp, paddingRight: "52px" }} />
+              <button type="button" aria-label="Filter by category" aria-expanded={categoryFilterOpen} onClick={() => setCategoryFilterOpen((open) => !open)} style={{ position: "absolute", top: "50%", right: "6px", transform: "translateY(-50%)", width: "36px", height: "34px", display: "flex", alignItems: "center", justifyContent: "center", border: "none", borderRadius: "6px", background: categoryFilterOpen || filterCat ? "#f1ebe5" : "transparent", color: ACCENT, cursor: "pointer" }}>
+                <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 5h16l-6.5 7.5v5l-3 1.5v-6.5L4 5z" /></svg>
+                {filterCat && <span style={{ position: "absolute", top: "5px", right: "5px", width: "6px", height: "6px", borderRadius: "50%", background: "#b45309" }} />}
+              </button>
+            </div>
+            {categoryFilterOpen && <div style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 20, width: "230px", padding: "14px", border: "1px solid #ede3d9", borderRadius: "10px", background: "#fff", boxShadow: "0 8px 24px rgba(40,24,12,0.14)" }}>
+              <label style={{ ...lbl, marginBottom: "8px" }}>Filter by category</label>
+              <select aria-label="Filter menu by category" value={filterCat} onChange={(e) => { setFilterCat(e.target.value); setCategoryFilterOpen(false); }} style={sel}>
+                <option value="">All Categories</option>
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              {filterCat && <button type="button" onClick={() => { setFilterCat(""); setCategoryFilterOpen(false); }} style={{ marginTop: "9px", padding: 0, border: "none", background: "none", color: ACCENT, fontSize: "12px", fontWeight: 700, cursor: "pointer" }}>Clear category filter</button>}
+            </div>}
           </div>
           <div style={{ background: "#fff", borderRadius: "12px", boxShadow: "0 1px 6px rgba(0,0,0,0.07)", overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ background: "#faf7f4", borderBottom: "1px solid #ede8e3" }}>
-                  {["Image", "Name", "Category", "Price", "Status", "Featured", "Actions"].map((h) => (
+                  {["Image", "Name", "Category", "Price", "Order status", "Featured", "Actions"].map((h) => (
                     <th key={h} style={{ padding: "13px 16px", textAlign: "left", fontSize: "11px", fontWeight: 800, color: "#a89080", textTransform: "uppercase", letterSpacing: "0.5px" }}>{h}</th>
                   ))}
                 </tr>
@@ -148,7 +196,7 @@ export default function AdminMenuPage() {
                     <td style={{ padding: "12px 16px" }}>
                       {item.image_url
                         ? <img src={item.image_url} alt={item.name} style={{ width: "52px", height: "52px", objectFit: "cover", borderRadius: "8px" }} />
-                        : <div style={{ width: "52px", height: "52px", borderRadius: "8px", background: "#f1ebe5", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "20px" }}>☕</div>
+                        : <div style={{ width: "52px", height: "52px", borderRadius: "8px", background: "#f1ebe5", display: "flex", alignItems: "center", justifyContent: "center" }}><SystemIcon name="coffee" size={20} /></div>
                       }
                     </td>
                     <td style={{ padding: "12px 16px" }}>
@@ -157,8 +205,13 @@ export default function AdminMenuPage() {
                     </td>
                     <td style={{ padding: "12px 16px" }}><span style={{ background: "#f1ebe5", padding: "3px 10px", borderRadius: "10px", fontSize: "12px", fontWeight: 600, color: "#7c4a1e" }}>{(item.categories as unknown as { name: string } | null)?.name || "—"}</span></td>
                     <td style={{ padding: "12px 16px", fontWeight: 700, fontSize: "14px", color: "#1a1008" }}>₱{Number(item.price).toFixed(2)}</td>
-                    <td style={{ padding: "12px 16px" }}><span style={{ fontSize: "11px", fontWeight: 700, padding: "3px 10px", borderRadius: "10px", background: item.is_available ? "#f0fdf4" : "#fff0f0", color: item.is_available ? "#22c55e" : "#ef4444" }}>{item.is_available ? "Available" : "Unavailable"}</span></td>
-                    <td style={{ padding: "12px 16px" }}><span style={{ fontSize: "13px" }}>{item.is_featured ? "⭐" : "—"}</span></td>
+                    <td style={{ padding: "12px 16px" }}>
+                      <span style={{ display: "inline-block", fontSize: "11px", fontWeight: 700, padding: "4px 10px", borderRadius: "10px", background: item.orderAvailability === "available" ? "#f0fdf4" : item.orderAvailability === "recipe_needed" ? "#fff7ed" : "#fff0f0", color: item.orderAvailability === "available" ? "#15803d" : item.orderAvailability === "recipe_needed" ? "#b45309" : "#b91c1c" }}>
+                        {item.orderAvailability === "available" ? "Available" : item.orderAvailability === "recipe_needed" ? "Recipe needed" : "Unavailable"}
+                      </span>
+                      <div style={{ marginTop: "4px", fontSize: "10px", color: "#a89080" }}>Menu setting: {item.is_available ? "On" : "Off"}</div>
+                    </td>
+                    <td style={{ padding: "12px 16px" }}><span style={{ fontSize: "13px" }}>{item.is_featured ? <SystemIcon name="star" size={15} /> : "—"}</span></td>
                     <td style={{ padding: "12px 16px" }}>
                       <div style={{ display: "flex", gap: "8px" }}>
                         <button onClick={() => { setForm({ id: item.id, name: item.name, description: item.description, price: String(item.price), is_available: item.is_available, is_featured: item.is_featured, category_id: item.category_id }); setImageFile(null); setModal("edit"); }} style={btnEdit}>Edit</button>
@@ -179,7 +232,7 @@ export default function AdminMenuPage() {
           {categories.map((cat) => (
             <div key={cat.id} style={{ background: "#fff", borderRadius: "12px", padding: "20px 22px", boxShadow: "0 1px 6px rgba(0,0,0,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between", borderLeft: `4px solid ${ACCENT}` }}>
               <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                <span style={{ fontSize: "22px" }}>🏷️</span>
+                <SystemIcon name="category" size={22} />
                 <div>
                   <div style={{ fontWeight: 700, fontSize: "15px", color: "#1a1008" }}>{cat.name}</div>
                   <div style={{ fontSize: "11px", color: "#a89080" }}>{items.filter((i) => i.category_id === cat.id).length} items · {cat.is_active ? "Active" : "Hidden"}</div>
@@ -200,8 +253,9 @@ export default function AdminMenuPage() {
           <div style={modalBox}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
               <h2 style={{ fontWeight: 900, fontSize: "18px", color: "#1a1008", margin: 0 }}>{modal === "add" ? "Add Menu Item" : "Edit Menu Item"}</h2>
-              <button onClick={() => setModal(null)} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer", color: "#a89080" }}>✕</button>
+              <button onClick={() => setModal(null)} aria-label="Close menu form" style={{ background: "none", border: "none", cursor: "pointer", color: "#a89080", display: "flex" }}><SystemIcon name="x" size={20} /></button>
             </div>
+            {pageError && <p role="alert" style={{ color: "#b91c1c", fontSize: "13px", margin: "-12px 0 16px" }}>{pageError}</p>}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
               <div style={{ gridColumn: "1/-1" }}>
                 <label style={lbl}>Item Name *</label>
@@ -269,8 +323,9 @@ export default function AdminMenuPage() {
           <div style={{ ...modalBox, maxWidth: "480px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
               <h2 style={{ fontWeight: 900, fontSize: "18px", color: "#1a1008", margin: 0 }}>{catModal === "add" ? "Add Category" : "Edit Category"}</h2>
-              <button onClick={() => setCatModal(null)} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer", color: "#a89080" }}>✕</button>
+              <button onClick={() => setCatModal(null)} aria-label="Close category form" style={{ background: "none", border: "none", cursor: "pointer", color: "#a89080", display: "flex" }}><SystemIcon name="x" size={20} /></button>
             </div>
+            {pageError && <p role="alert" style={{ color: "#b91c1c", fontSize: "13px", margin: "-12px 0 16px" }}>{pageError}</p>}
             <label style={lbl}>Category Name *</label>
             <input value={catForm.name} onChange={(e) => setCatForm({ ...catForm, name: e.target.value })} style={inp} placeholder="e.g. Cold Brews" />
             <label style={{ ...lbl, marginTop: "16px" }}>Sort Order</label>

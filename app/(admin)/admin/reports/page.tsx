@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 const ACCENT = "#7c4a1e";
@@ -15,6 +15,7 @@ const PERIODS: { label: string; value: Period }[] = [
 
 type TopItem = { menu_item_id: string; menu_item_name: string; qty: number; revenue: number };
 type TopCustomer = { id: string; full_name: string; email: string; order_count: number; total_spent: number };
+type ReportOrder = { id: string; status: string; order_type: string; order_source: "online" | "store"; total_amount: number; created_at: string; user_id: string | null };
 
 export default function AdminReportsPage() {
   const [period, setPeriod] = useState<Period>("this_month");
@@ -24,45 +25,66 @@ export default function AdminReportsPage() {
   const [dailyRevenue, setDailyRevenue] = useState<{ date: string; revenue: number }[]>([]);
   const [topItems, setTopItems] = useState<TopItem[]>([]);
   const [topCustomers, setTopCustomers] = useState<TopCustomer[]>([]);
-  const [statusBreakdown, setStatusBreakdown] = useState<Record<string, number>>({});
+  const [sourceBreakdown, setSourceBreakdown] = useState({ online: { orders: 0, revenue: 0 }, store: { orders: 0, revenue: 0 } });
+  const [loadError, setLoadError] = useState("");
 
-  useEffect(() => { load(); }, [period]);
-
-  async function load() {
-    setLoading(true);
+  const load = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true);
+    setLoadError("");
     const now = new Date();
     let since: Date | null = null;
     if (period === "today") { since = new Date(now); since.setHours(0, 0, 0, 0); }
     else if (period === "this_week") { since = new Date(now); since.setDate(now.getDate() - 7); }
     else if (period === "this_month") { since = new Date(now); since.setDate(now.getDate() - 30); }
 
-    let q = supabase.from("orders").select("id, status, order_type, total_amount, created_at, user_id");
-    if (since) q = q.gte("created_at", since.toISOString());
-    const { data: allOrders } = await q;
-    const ords = allOrders ?? [];
+    const ords: ReportOrder[] = [];
+    for (let offset = 0; ; offset += 1000) {
+      let q = supabase.from("orders").select("id, status, order_type, order_source, total_amount, created_at, user_id").order("created_at", { ascending: true }).range(offset, offset + 999);
+      if (since) q = q.gte("created_at", since.toISOString());
+      const { data, error } = await q;
+      if (error) { setLoadError(error.message); setLoading(false); return; }
+      ords.push(...((data ?? []) as ReportOrder[]));
+      if (!data || data.length < 1000) break;
+    }
 
     const totalRev = ords.filter((o) => o.status !== "cancelled").reduce((s: number, o: { total_amount: number }) => s + (o.total_amount || 0), 0);
     const dineRev = ords.filter((o) => o.order_type === "dine_in" && o.status !== "cancelled").reduce((s: number, o: { total_amount: number }) => s + (o.total_amount || 0), 0);
-    const pickRev = ords.filter((o) => o.order_type === "pickup" && o.status !== "cancelled").reduce((s: number, o: { total_amount: number }) => s + (o.total_amount || 0), 0);
+    const pickRev = ords.filter((o) => (o.order_type === "pickup" || o.order_type === "takeout") && o.status !== "cancelled").reduce((s: number, o: { total_amount: number }) => s + (o.total_amount || 0), 0);
     const delRev = ords.filter((o) => o.order_type === "delivery" && o.status !== "cancelled").reduce((s: number, o: { total_amount: number }) => s + (o.total_amount || 0), 0);
     setRevenue({ total: totalRev, dine_in: dineRev, pickup: pickRev, delivery: delRev });
 
     const total = ords.length;
-    const completed = ords.filter((o) => o.status === "delivered").length;
+    const completed = ords.filter((o) => o.status === "delivered" || o.status === "completed").length;
     const cancelled = ords.filter((o) => o.status === "cancelled").length;
     setOrders({ total, completed, cancelled, completion_rate: total ? Math.round((completed / total) * 100) : 0, cancellation_rate: total ? Math.round((cancelled / total) * 100) : 0 });
 
-    const sc: Record<string, number> = {};
-    ords.forEach((o: { status: string }) => { sc[o.status] = (sc[o.status] || 0) + 1; });
-    setStatusBreakdown(sc);
+    const bySource = { online: { orders: 0, revenue: 0 }, store: { orders: 0, revenue: 0 } };
+    ords.forEach((order) => {
+      const source = order.order_source === "store" ? "store" : "online";
+      bySource[source].orders++;
+      if (order.status !== "cancelled") bySource[source].revenue += Number(order.total_amount) || 0;
+    });
+    setSourceBreakdown(bySource);
 
     // Daily revenue — last 30 days
+    let trendOrders = ords;
+    if (period === "today" || period === "this_week") {
+      const trendSince = new Date(); trendSince.setDate(trendSince.getDate() - 30);
+      trendOrders = [];
+      for (let offset = 0; ; offset += 1000) {
+        const { data, error } = await supabase.from("orders").select("status, total_amount, created_at").gte("created_at", trendSince.toISOString()).order("created_at", { ascending: true }).range(offset, offset + 999);
+        if (error) { setLoadError(error.message); setLoading(false); return; }
+        trendOrders.push(...((data ?? []) as typeof trendOrders));
+        if (!data || data.length < 1000) break;
+      }
+    }
+
     const daily = [];
     for (let i = 29; i >= 0; i--) {
       const d = new Date(); d.setDate(d.getDate() - i);
       const ds = new Date(d); ds.setHours(0, 0, 0, 0);
       const de = new Date(d); de.setHours(23, 59, 59, 999);
-      const rev = ords.filter((o: { created_at: string; status: string; total_amount: number }) => {
+      const rev = trendOrders.filter((o) => {
         const t = new Date(o.created_at);
         return t >= ds && t <= de && o.status !== "cancelled";
       }).reduce((s: number, o: { total_amount: number }) => s + (o.total_amount || 0), 0);
@@ -70,22 +92,28 @@ export default function AdminReportsPage() {
     }
     setDailyRevenue(daily);
 
-    // Top items
-    const orderIds = ords.map((o: { id: string }) => o.id);
-    if (orderIds.length > 0) {
-      const { data: items } = await supabase.from("order_items").select("menu_item_id, menu_item_name, quantity, subtotal").in("order_id", orderIds);
-      const itemMap: Record<string, TopItem> = {};
-      (items ?? []).forEach((i: { menu_item_id: string; menu_item_name: string; quantity: number; subtotal: number }) => {
-        if (!itemMap[i.menu_item_id]) itemMap[i.menu_item_id] = { menu_item_id: i.menu_item_id, menu_item_name: i.menu_item_name, qty: 0, revenue: 0 };
-        itemMap[i.menu_item_id].qty += i.quantity;
-        itemMap[i.menu_item_id].revenue += i.subtotal;
-      });
-      setTopItems(Object.values(itemMap).sort((a, b) => b.qty - a.qty).slice(0, 10));
-    } else { setTopItems([]); }
+    // Top items use only non-cancelled online and store orders.
+    const orderIds = ords.filter((order) => order.status !== "cancelled").map((order) => order.id);
+    const itemMap: Record<string, TopItem> = {};
+    for (let start = 0; start < orderIds.length; start += 100) {
+      const batch = orderIds.slice(start, start + 100);
+      for (let offset = 0; ; offset += 1000) {
+        const { data: items, error } = await supabase.from("order_items").select("menu_item_id, menu_item_name, quantity, subtotal").in("order_id", batch).range(offset, offset + 999);
+        if (error) { setLoadError(error.message); setLoading(false); return; }
+        (items ?? []).forEach((item) => {
+          const key = item.menu_item_id || item.menu_item_name;
+          if (!itemMap[key]) itemMap[key] = { menu_item_id: key, menu_item_name: item.menu_item_name, qty: 0, revenue: 0 };
+          itemMap[key].qty += Number(item.quantity) || 0;
+          itemMap[key].revenue += Number(item.subtotal) || 0;
+        });
+        if (!items || items.length < 1000) break;
+      }
+    }
+    setTopItems(Object.values(itemMap).sort((a, b) => b.qty - a.qty).slice(0, 10));
 
     // Top customers
     const custMap: Record<string, { order_count: number; total_spent: number }> = {};
-    ords.filter((o: { status: string }) => o.status !== "cancelled").forEach((o: { user_id: string; total_amount: number }) => {
+    ords.filter((o) => o.status !== "cancelled").forEach((o) => {
       if (!o.user_id) return;
       if (!custMap[o.user_id]) custMap[o.user_id] = { order_count: 0, total_spent: 0 };
       custMap[o.user_id].order_count++;
@@ -93,12 +121,35 @@ export default function AdminReportsPage() {
     });
     const topCustIds = Object.entries(custMap).sort((a, b) => b[1].total_spent - a[1].total_spent).slice(0, 10).map(([id]) => id);
     if (topCustIds.length > 0) {
-      const { data: custData } = await supabase.from("user_accounts").select("id, full_name, email").in("id", topCustIds);
-      setTopCustomers((custData ?? []).map((u: { id: string; full_name: string; email: string }) => ({ ...u, ...custMap[u.id] })));
+      const { data: custData, error } = await supabase.rpc("admin_list_existing_customer_accounts");
+      if (error) {
+        setLoadError(`Could not load top customer profiles: ${error.message}. Run supabase_customer_management_migration.sql in Supabase SQL Editor.`);
+        setTopCustomers([]);
+      } else {
+        const topCustIdSet = new Set(topCustIds);
+        const profiles = (custData ?? []) as { id: string; full_name: string | null; email: string | null }[];
+        setTopCustomers(profiles
+          .filter((profile) => topCustIdSet.has(profile.id))
+          .map((profile) => ({
+            id: profile.id,
+            full_name: profile.full_name || "Customer",
+            email: profile.email || "",
+            ...custMap[profile.id],
+          })));
+      }
     } else { setTopCustomers([]); }
 
     setLoading(false);
-  }
+  }, [period]);
+
+  useEffect(() => {
+    queueMicrotask(() => { void load(true); });
+    const channel = supabase.channel("admin-reports-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, () => { void load(false); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "order_items" }, () => { void load(false); })
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [load]);
 
   // Revenue trend chart
   const maxRev = Math.max(...dailyRevenue.map((d) => d.revenue), 1);
@@ -125,6 +176,8 @@ export default function AdminReportsPage() {
         </div>
       </div>
 
+      {loadError && <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 8, padding: "10px 12px", fontSize: 13 }}>{loadError}</div>}
+
       {loading ? (
         <div style={{ textAlign: "center", padding: "60px", color: "#a89080" }}>Loading analytics...</div>
       ) : (<>
@@ -132,7 +185,7 @@ export default function AdminReportsPage() {
         {/* KPI Cards */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "14px" }}>
           {[
-            { label: "Total Revenue", value: peso(revenue.total), sub: `Dine-in ${peso(revenue.dine_in)} · Pickup ${peso(revenue.pickup)}`, color: ACCENT },
+            { label: "Total Revenue", value: peso(revenue.total), sub: `Dine-in ${peso(revenue.dine_in)} · Takeout ${peso(revenue.pickup)} · Delivery ${peso(revenue.delivery)}`, color: ACCENT },
             { label: "Total Orders", value: String(orders.total), sub: `${orders.completed} completed · ${orders.cancelled} cancelled`, color: "#3b82f6" },
             { label: "Completion Rate", value: `${orders.completion_rate}%`, sub: `${orders.completed} completed orders`, color: "#22c55e" },
             { label: "Cancellation Rate", value: `${orders.cancellation_rate}%`, sub: `${orders.cancelled} cancelled orders`, color: "#f97316" },
@@ -141,6 +194,16 @@ export default function AdminReportsPage() {
               <div style={{ fontSize: "12px", color: "#a89080", fontWeight: 600, marginBottom: "6px" }}>{k.label}</div>
               <div style={{ fontSize: "26px", fontWeight: 900, color: "#1a1008", lineHeight: 1, marginBottom: "6px" }}>{k.value}</div>
               <div style={{ fontSize: "11px", color: "#a89080" }}>{k.sub}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: "14px" }}>
+          {(["online", "store"] as const).map((source) => (
+            <div key={source} style={{ background: "#fff", borderRadius: 12, padding: "16px 20px", boxShadow: "0 1px 4px rgba(0,0,0,0.06)", borderLeft: `3px solid ${source === "store" ? "#7c3aed" : "#4f46e5"}` }}>
+              <div style={{ color: "#a89080", fontSize: 12, fontWeight: 700, textTransform: "capitalize" }}>{source} orders</div>
+              <div style={{ marginTop: 5, color: "#1a1008", fontSize: 22, fontWeight: 900 }}>{sourceBreakdown[source].orders} <span style={{ color: "#a89080", fontSize: 12, fontWeight: 600 }}>orders</span></div>
+              <div style={{ marginTop: 3, color: ACCENT, fontSize: 13, fontWeight: 700 }}>{peso(sourceBreakdown[source].revenue)} revenue excluding cancelled orders</div>
             </div>
           ))}
         </div>
@@ -162,7 +225,7 @@ export default function AdminReportsPage() {
             <div style={{ fontWeight: 800, fontSize: "15px", color: "#1a1008", marginBottom: "14px" }}>Order Breakdown</div>
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               {[
-                { label: "Dine In", value: orders.total ? Math.round(((statusBreakdown.delivered || 0) / orders.total) * 100) : 0, color: ACCENT },
+                { label: "In Progress", value: orders.total ? Math.round(((orders.total - orders.completed - orders.cancelled) / orders.total) * 100) : 0, color: ACCENT },
                 { label: "Completed", value: orders.completion_rate, color: "#22c55e" },
                 { label: "Cancelled", value: orders.cancellation_rate, color: "#94a3b8" },
               ].map((row) => (
@@ -200,7 +263,7 @@ export default function AdminReportsPage() {
 
           <div style={{ background: "#fff", borderRadius: "12px", padding: "20px 22px", boxShadow: "0 1px 4px rgba(0,0,0,0.06)" }}>
             <div style={{ fontWeight: 800, fontSize: "15px", color: "#1a1008", marginBottom: "14px" }}>Top Customers</div>
-            {topCustomers.length === 0 && <p style={{ color: "#aaa", fontSize: "13px" }}>No customer data yet.</p>}
+            {topCustomers.length === 0 && <p style={{ color: "#aaa", fontSize: "13px" }}>No linked customer orders in this period.</p>}
             <div style={{ display: "grid", gridTemplateColumns: "24px 1fr 60px 90px", gap: "8px", padding: "0 0 8px", borderBottom: "1px solid #f1ebe5", marginBottom: "6px" }}>
               {["#", "Customer", "Orders", "Spent"].map((h) => (<div key={h} style={{ fontSize: "11px", fontWeight: 700, color: "#a89080", textTransform: "uppercase" }}>{h}</div>))}
             </div>

@@ -26,7 +26,7 @@ export default function AboutPage() {
 
       <section className="relative isolate aspect-[624/161] min-h-[190px] w-full overflow-hidden md:min-h-[192px]">
         <Image
-          src="/aboutusback-hd.png"
+          src="/finalaboutus.png"
           alt="Brewora coffee bar"
           fill
           priority

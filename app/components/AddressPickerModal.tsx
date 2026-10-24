@@ -23,6 +23,7 @@ const ACCENT = "#b16b16";
 
 export default function AddressPickerModal({ onClose, onSelect, currentAddress }: Props) {
   const [addresses, setAddresses] = useState<SavedAddress[]>([]);
+  const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [initialCoords, setInitialCoords] = useState<{ lat: number; lng: number } | undefined>();
@@ -33,17 +34,42 @@ export default function AddressPickerModal({ onClose, onSelect, currentAddress }
   const [instructions, setInstructions] = useState("");
   const [label, setLabel] = useState("Home");
   const [customLabel, setCustomLabel] = useState("");
+  const saveStartedRef = useRef(false);
+
+  const normalizeAddress = (value: string) => value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+
+  const removeDuplicateAddresses = (items: SavedAddress[]) => {
+    const seen = new Set<string>();
+    return items.filter((item) => {
+      const key = [normalizeAddress(item.address), normalizeAddress(item.floor || ""), normalizeAddress(item.instructions || "")].join("|");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
 
   useEffect(() => {
     const stored = localStorage.getItem("brewora_saved_addresses");
     if (stored) {
-      setAddresses(JSON.parse(stored));
+      try {
+        const parsed = JSON.parse(stored) as SavedAddress[];
+        const storedAddresses = Array.isArray(parsed) ? parsed : [];
+        const unique = removeDuplicateAddresses(storedAddresses);
+        setAddresses(unique);
+        const selected = unique.find((item) => normalizeAddress(item.address) === normalizeAddress(currentAddress));
+        setSelectedAddressId(selected?.id ?? null);
+        if (unique.length !== storedAddresses.length) localStorage.setItem("brewora_saved_addresses", JSON.stringify(unique));
+      } catch {
+        localStorage.removeItem("brewora_saved_addresses");
+        setAddresses([]);
+      }
     } else if (currentAddress) {
       const initial: SavedAddress[] = [{ id: Date.now().toString(), label: "Home", address: currentAddress, lat: 0, lng: 0 }];
       setAddresses(initial);
+      setSelectedAddressId(initial[0].id);
       localStorage.setItem("brewora_saved_addresses", JSON.stringify(initial));
     }
-  }, []);
+  }, [currentAddress]);
 
   const persist = (updated: SavedAddress[]) => {
     setAddresses(updated);
@@ -77,16 +103,33 @@ export default function AddressPickerModal({ onClose, onSelect, currentAddress }
   };
 
   const handleSave = () => {
+    // A rapid double click should never create duplicate saved addresses.
+    if (saveStartedRef.current) return;
+    saveStartedRef.current = true;
     const finalLabel = label || customLabel.trim() || "Home";
     const entry: SavedAddress = {
-      id: editingId || Date.now().toString(),
+      id: editingId || (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`),
       label: finalLabel, address: pickedAddress,
       lat: pickedLat, lng: pickedLng, floor, instructions,
     };
-    const updated = editingId ? addresses.map((a) => a.id === editingId ? entry : a) : [...addresses, entry];
+    const withoutSameLocation = addresses.filter((a) => a.id === editingId || !(
+      normalizeAddress(a.address) === normalizeAddress(entry.address)
+      && normalizeAddress(a.floor || "") === normalizeAddress(entry.floor || "")
+      && normalizeAddress(a.instructions || "") === normalizeAddress(entry.instructions || "")
+    ));
+    const updated = removeDuplicateAddresses(editingId
+      ? withoutSameLocation.map((a) => a.id === editingId ? entry : a)
+      : [...withoutSameLocation, entry]);
     persist(updated);
+    setSelectedAddressId(entry.id);
     onSelect(entry.address, entry.lat, entry.lng, entry.floor || "", entry.instructions || "");
     onClose();
+  };
+
+  const selectAddress = (item: SavedAddress) => {
+    setSelectedAddressId(item.id);
+    onSelect(item.address, item.lat, item.lng, item.floor || "", item.instructions || "");
+    onClose(); // Closes only this picker; the parent cart remains open.
   };
 
   if (showForm) {
@@ -113,11 +156,11 @@ export default function AddressPickerModal({ onClose, onSelect, currentAddress }
       style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "flex-end" }}
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div style={{ background: "#fff", borderRadius: "20px 20px 0 0", padding: "12px 20px 40px", width: "100%", maxHeight: "80vh", overflowY: "auto", boxShadow: "0 -4px 24px rgba(0,0,0,0.15)" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: "20px 20px 0 0", padding: "12px 20px 40px", width: "100%", maxHeight: "80vh", overflowY: "auto", boxShadow: "0 -4px 24px rgba(0,0,0,0.15)" }}>
         <div style={{ width: "40px", height: "4px", background: "#e0d6cc", borderRadius: "2px", margin: "0 auto 20px" }} />
         <h2 style={{ color: "#21140b", fontSize: "18px", fontWeight: 900, marginBottom: "20px" }}>Where should we deliver?</h2>
 
-        <button onClick={handleUseCurrentLocation} style={{ width: "100%", background: "none", border: "none", display: "flex", alignItems: "center", gap: "12px", padding: "14px 4px", cursor: "pointer", color: ACCENT }}>
+        <button type="button" onClick={handleUseCurrentLocation} style={{ width: "100%", background: "none", border: "none", display: "flex", alignItems: "center", gap: "12px", padding: "14px 4px", cursor: "pointer", color: ACCENT }}>
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke={ACCENT} strokeWidth={2} style={{ flexShrink: 0 }}>
             <circle cx="12" cy="12" r="3" />
             <path strokeLinecap="round" d="M12 2v3M12 19v3M2 12h3M19 12h3" />
@@ -132,28 +175,28 @@ export default function AddressPickerModal({ onClose, onSelect, currentAddress }
         {addresses.map((a) => (
           <div key={a.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "14px 4px", borderBottom: "1px solid #f5ede6" }}>
             <div
-              onClick={() => { onSelect(a.address, a.lat, a.lng, a.floor || "", a.instructions || ""); onClose(); }}
+              onClick={() => selectAddress(a)}
               style={{
                 width: "20px", height: "20px", borderRadius: "50%", flexShrink: 0, cursor: "pointer",
-                border: `2px solid ${a.address === currentAddress ? ACCENT : "#ccc"}`,
-                background: a.address === currentAddress ? ACCENT : "transparent",
+                border: `2px solid ${a.id === selectedAddressId ? ACCENT : "#ccc"}`,
+                background: a.id === selectedAddressId ? ACCENT : "transparent",
                 display: "flex", alignItems: "center", justifyContent: "center",
               }}
             >
-              {a.address === currentAddress && <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#fff" }} />}
+              {a.id === selectedAddressId && <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#fff" }} />}
             </div>
-            <div style={{ flex: 1, cursor: "pointer" }} onClick={() => { onSelect(a.address, a.lat, a.lng, a.floor || "", a.instructions || ""); onClose(); }}>
+            <div style={{ flex: 1, cursor: "pointer" }} onClick={() => selectAddress(a)}>
               <p style={{ color: "#21140b", fontWeight: 700, fontSize: "14px", margin: "0 0 2px" }}>{a.label}</p>
               <p style={{ color: "#7a5c44", fontSize: "12px", margin: 0, lineHeight: 1.4 }}>{a.address}</p>
               {a.floor && <p style={{ color: "#aaa", fontSize: "11px", margin: "2px 0 0" }}>{a.floor}</p>}
               {a.instructions && <p style={{ color: "#aaa", fontSize: "11px", margin: "2px 0 0" }}>{a.instructions}</p>}
             </div>
-            <button onClick={() => openEditForm(a)} style={{ background: "none", border: "1px solid #e0d6cc", borderRadius: "6px", cursor: "pointer", color: "#7a5c44", fontSize: "11px", fontWeight: 600, padding: "4px 8px" }}>Edit</button>
-            <button onClick={() => persist(addresses.filter((x) => x.id !== a.id))} style={{ background: "none", border: "1px solid #fecaca", borderRadius: "6px", cursor: "pointer", color: "#ef4444", fontSize: "11px", fontWeight: 600, padding: "4px 8px" }}>Remove</button>
+            <button type="button" onClick={() => openEditForm(a)} style={{ background: "none", border: "1px solid #e0d6cc", borderRadius: "6px", cursor: "pointer", color: "#7a5c44", fontSize: "11px", fontWeight: 600, padding: "4px 8px" }}>Edit</button>
+            <button type="button" onClick={() => persist(addresses.filter((x) => x.id !== a.id))} style={{ background: "none", border: "1px solid #fecaca", borderRadius: "6px", cursor: "pointer", color: "#ef4444", fontSize: "11px", fontWeight: 600, padding: "4px 8px" }}>Remove</button>
           </div>
         ))}
 
-        <button onClick={() => openNewForm()} style={{ width: "100%", background: "none", border: "none", display: "flex", alignItems: "center", gap: "12px", padding: "16px 4px", cursor: "pointer", color: ACCENT, marginTop: "4px" }}>
+        <button type="button" onClick={() => openNewForm()} style={{ width: "100%", background: "none", border: "none", display: "flex", alignItems: "center", gap: "12px", padding: "16px 4px", cursor: "pointer", color: ACCENT, marginTop: "4px" }}>
           <span style={{ fontSize: "14px", fontWeight: 700 }}>+</span>
           <span style={{ fontWeight: 700, fontSize: "14px" }}>Add a new address</span>
         </button>

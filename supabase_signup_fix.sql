@@ -13,22 +13,23 @@ create table if not exists public.user_accounts (
   created_at timestamptz default now()
 );
 
+-- Remove any plaintext passwords written by the earlier signup trigger.
+update public.user_accounts set password = null where password is not null;
+
 create or replace function public.handle_new_user()
 returns trigger as $$
 begin
-  insert into public.user_accounts (id, full_name, email, password, contact_number, role)
+  insert into public.user_accounts (id, full_name, email, contact_number, role)
   values (
     new.id,
     coalesce(new.raw_user_meta_data->>'full_name', ''),
     new.email,
-    coalesce(new.raw_user_meta_data->>'password', ''),
     coalesce(new.raw_user_meta_data->>'contact_number', ''),
     'customer'
   )
   on conflict (id) do update set
     full_name = excluded.full_name,
     email = excluded.email,
-    password = excluded.password,
     contact_number = excluded.contact_number;
 
   return new;
@@ -48,8 +49,8 @@ grant execute on function public.handle_new_user() to supabase_auth_admin;
 drop policy if exists "Customers cancel own pending orders" on orders;
 create policy "Customers cancel own pending orders" on orders
   for update
-  using (auth.uid() = user_id and status = 'pending')
-  with check (auth.uid() = user_id and status = 'cancelled');
+  using (auth.uid() = user_id and status = 'pending' and lower(coalesce(payment_method, '')) <> 'gcash' and created_at > statement_timestamp() - interval '10 seconds')
+  with check (auth.uid() = user_id and status = 'cancelled' and lower(coalesce(payment_method, '')) <> 'gcash' and created_at > statement_timestamp() - interval '10 seconds');
 
 -- Make address insert explicit for the checkout address selector.
 drop policy if exists "Users insert own addresses" on addresses;

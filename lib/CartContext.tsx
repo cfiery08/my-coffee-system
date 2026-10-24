@@ -14,6 +14,7 @@ type CartCtx = {
   add: (item: Omit<CartItem, "quantity">, quantity?: number) => void;
   remove: (id: string) => void;
   update: (id: string, quantity: number) => void;
+  replace: (items: CartItem[]) => void;
   clear: () => void;
   total: number;
   count: number;
@@ -42,12 +43,13 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   }
 
   function clear() { setItems([]); }
+  function replace(items: CartItem[]) { setItems(items); }
 
   const total = items.reduce((s, i) => s + i.price * i.quantity, 0);
   const count = items.reduce((s, i) => s + i.quantity, 0);
 
   return (
-    <CartContext.Provider value={{ items, add, remove, update, clear, total, count }}>
+    <CartContext.Provider value={{ items, add, remove, update, replace, clear, total, count }}>
       {children}
     </CartContext.Provider>
   );

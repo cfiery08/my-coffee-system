@@ -5,12 +5,18 @@ import Link from "next/link";
 import Image from "next/image";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/AuthContext";
+import SystemIcon from "@/app/components/SystemIcon";
 
 const NAV = [
   { href: "/admin", label: "Dashboard", icon: <HomeIcon /> },
   { href: "/admin/orders", label: "Orders", icon: <OrderIcon /> },
   { href: "/admin/menu", label: "Menu Management", icon: <MenuIcon /> },
+  { href: "/admin/inventory", label: "Inventory", icon: <InventoryIcon /> },
+  { href: "/admin/inventory-history", label: "Inventory History", icon: <HistoryIcon /> },
+  { href: "/admin/menu-ingredients", label: "Menu Ingredients", icon: <RecipeIcon /> },
   { href: "/admin/customers", label: "Customers", icon: <UserIcon /> },
+  { href: "/admin/reviews", label: "Customer Reviews", icon: <ReviewIcon /> },
+  { href: "/admin/contact-messages", label: "Contact Messages", icon: <MessageIcon /> },
   { href: "/admin/staff", label: "Manage Staff", icon: <StaffIcon /> },
   { href: "/admin/reports", label: "Reports", icon: <ReportsIcon /> },
 ];
@@ -35,6 +41,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   }, [user]);
 
   async function handleLogout() {
+    if (!window.confirm("Are you sure you want to log out of the admin account?")) return;
     await supabase.auth.signOut();
     router.push("/");
   }
@@ -101,7 +108,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           <div style={{ position: "relative", zIndex: 2, padding: "16px 14px" }}>
             <div style={{ color: "#fff", fontWeight: 800, fontSize: "13px", lineHeight: 1.4, marginBottom: "4px" }}>Great coffee.</div>
             <div style={{ color: "#fff", fontWeight: 800, fontSize: "13px", lineHeight: 1.4, marginBottom: "6px" }}>Happy customers.</div>
-            <div style={{ color: ACCENT, fontSize: "18px" }}>☕</div>
+            <SystemIcon name="coffee" size={18} style={{ color: ACCENT }} />
           </div>
         </div>
       </aside>
@@ -137,7 +144,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 function HomeIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>; }
 function OrderIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg>; }
 function MenuIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>; }
+function InventoryIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg>; }
+function HistoryIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12a9 9 0 1 0 2.64-6.36L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>; }
+function RecipeIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01" strokeWidth="3"/></svg>; }
 function UserIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>; }
 function StaffIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>; }
 function ReportsIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>; }
+function ReviewIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m12 3 2.7 5.47 6.03.88-4.36 4.25 1.03 6.01L12 16.77l-5.4 2.84 1.03-6.01-4.36-4.25 6.03-.88L12 3z"/></svg>; }
+function MessageIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8A8.5 8.5 0 0 1 8.7 3.9a8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/></svg>; }
 function LogoutIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>; }

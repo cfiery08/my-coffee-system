@@ -9,7 +9,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { useCart } from "@/lib/CartContext";
 import { useAuth } from "@/lib/AuthContext";
 
-type MenuItem = { id: string; name: string; description: string; price: number; image_url: string | null };
+type MenuItem = { id: string; name: string; description: string; price: number; image_url: string | null; available: boolean };
 
 export default function Home() {
   const [featured, setFeatured] = useState<MenuItem[]>([]);
@@ -34,7 +34,12 @@ export default function Home() {
       .eq("is_featured", true)
       .eq("is_available", true)
       .limit(4)
-      .then(({ data }) => setFeatured(data ?? []));
+      .then(async ({ data }) => {
+        const rows = data ?? [];
+        const { data: unavailableRows } = await supabase.rpc("get_unavailable_menu_item_ids", { p_menu_item_ids: rows.map((item) => item.id) });
+        const unavailableIds = new Set((unavailableRows ?? []).map((row: { menu_item_id: string }) => row.menu_item_id));
+        setFeatured(rows.map((item) => ({ ...item, available: !unavailableIds.has(item.id) })));
+      });
   }, []);
 
   return (
@@ -98,6 +103,7 @@ export default function Home() {
                   desc: item.description,
                   price: `₱${item.price.toFixed(2)}`,
                   img: item.image_url ?? "/logo.png",
+                  available: item.available,
                 }}
                 onAdd={(qty) => addToCart(item, qty)}
                 onAddStart={() => { if (!session) { router.push("/login"); return false; } return true; }}

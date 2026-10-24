@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/AuthContext";
+import StoreReceipt, { type ReceiptOrder } from "@/app/components/StoreReceipt";
 
 const ACCENT = "#7c4a1e";
 const peso = (n: number) => `₱${Number(n).toFixed(2)}`;
@@ -20,42 +21,71 @@ const STATUS_FLOW_PICKUP: Record<string, string> = {
   pending: "confirmed", confirmed: "preparing", preparing: "ready", ready: "delivered",
 };
 const STATUS_FLOW_DELIVERY: Record<string, string> = {
-  pending: "confirmed", confirmed: "preparing", preparing: "out_for_delivery", out_for_delivery: "delivered",
+  pending: "confirmed", confirmed: "preparing", preparing: "ready", ready: "out_for_delivery", out_for_delivery: "delivered",
 };
 const ACTION_LABEL: Record<string, string> = {
-  confirmed: "Confirm", preparing: "Start Preparing", ready: "Ready for Pickup",
-  out_for_delivery: "Out for Delivery", delivered: "Mark Delivered",
+  confirmed: "Confirm", preparing: "Start Preparing", ready: "Mark Ready",
+  out_for_delivery: "Mark Out for Delivery", delivered: "Mark Delivered",
 };
 
 const FILTERS = ["All", "pending", "confirmed", "preparing", "ready", "out_for_delivery", "delivered", "cancelled"];
 const TYPE_FILTERS = ["All Types", "pickup", "delivery"];
 
-type OrderItem = { id: string; menu_item_name: string; quantity: number; unit_price: number; subtotal: number };
+type OrderItem = { id: string; menu_item_name: string; image_url: string | null; quantity: number; unit_price: number; subtotal: number; order_item_reviews?: { liked: boolean }[] };
 type Order = {
   id: string; order_type: string; status: string; payment_status: string; payment_method: string | null;
-  total_amount: number; delivery_fee: number; notes: string | null; delivery_address_snapshot: string | null;
+  total_amount: number; subtotal: number; delivery_fee: number; contact_number: string | null; notes: string | null; delivery_address_snapshot: string | null;
   created_at: string; user_accounts: { full_name: string; email: string } | null; order_items: OrderItem[];
+  order_reviews?: { rating: number; would_order_again: boolean | null; comment: string; created_at: string }[];
 };
+
+function isCashOnDelivery(order: Order) {
+  const method = (order.payment_method ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const orderType = order.order_type.trim().toLowerCase();
+  return orderType !== "dine_in" && (!method || ["cash", "cod", "cash_on_delivery"].includes(method));
+}
+
+const canMarkOrderPaid = (order: Order) => !isCashOnDelivery(order) && order.payment_method?.trim().toLowerCase() !== "gcash";
 
 export default function StaffOrdersPage() {
   const { user } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [filter, setFilter] = useState("All");
   const [typeFilter, setTypeFilter] = useState("All Types");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Order | null>(null);
+  const [receipt, setReceipt] = useState<ReceiptOrder | null>(null);
   const [updating, setUpdating] = useState(false);
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 10;
 
   const load = useCallback(async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("orders")
-      .select("id, order_type, status, payment_status, payment_method, total_amount, delivery_fee, notes, delivery_address_snapshot, created_at, user_accounts(full_name, email), order_items(id, menu_item_name, quantity, unit_price, subtotal)")
+      .select("id, order_type, status, payment_status, payment_method, subtotal, total_amount, delivery_fee, contact_number, notes, delivery_address_snapshot, created_at, order_reviews(rating, would_order_again, comment, created_at), order_items(id, menu_item_name, image_url, quantity, unit_price, subtotal, order_item_reviews(liked))")
+      .eq("order_source", "online")
       .in("order_type", ["pickup", "delivery"])
       .order("created_at", { ascending: false });
-    setOrders((data as unknown as Order[]) ?? []);
+    if (error) {
+      setLoadError(error.message);
+    } else {
+      const rows = (data as unknown as Order[]) ?? [];
+      const { data: profiles, error: profilesError } = rows.length
+        ? await supabase.rpc("get_order_customer_profiles", { order_ids: rows.map((order) => order.id) })
+        : { data: [], error: null };
+      if (profilesError) {
+        setLoadError(profilesError.message);
+      } else {
+        setLoadError("");
+      }
+      const profileRows = (profiles ?? []) as { order_id: string; full_name: string; email: string }[];
+      const profileByOrderId = new Map<string, { full_name: string; email: string }>(profileRows.map((profile) => [profile.order_id, { full_name: profile.full_name, email: profile.email }]));
+      const refreshedOrders = rows.map((order) => ({ ...order, user_accounts: profileByOrderId.get(order.id) ?? null }));
+      setOrders(refreshedOrders);
+      setSelected((current) => current ? refreshedOrders.find((order) => order.id === current.id) ?? null : null);
+    }
     setLoading(false);
   }, []);
 
@@ -69,17 +99,19 @@ export default function StaffOrdersPage() {
 
   async function handleStatus(id: string, orderType: string, newStatus: string) {
     setUpdating(true);
-    await supabase.from("orders").update({ status: newStatus }).eq("id", id);
+    const order = orders.find((item) => item.id === id);
+    const updates = { status: newStatus, ...(newStatus === "delivered" && order && isCashOnDelivery(order) ? { payment_status: "paid" } : {}) };
+    await supabase.from("orders").update(updates).eq("id", id);
     await supabase.from("order_status_history").insert({ order_id: id, status: newStatus, changed_by: user?.id });
     await load();
-    setSelected((prev) => prev?.id === id ? { ...prev, status: newStatus } : prev);
     setUpdating(false);
   }
 
   async function handleMarkPaid(id: string) {
+    const order = orders.find((item) => item.id === id);
+    if (!order || !canMarkOrderPaid(order)) return;
     await supabase.from("orders").update({ payment_status: "paid" }).eq("id", id);
     await load();
-    setSelected((prev) => prev?.id === id ? { ...prev, payment_status: "paid" } : prev);
   }
 
   function getNextStatus(order: Order): string | undefined {
@@ -105,6 +137,7 @@ export default function StaffOrdersPage() {
 
   return (
     <div style={{ position: "relative", height: "calc(100vh - 112px)", display: "flex", flexDirection: "column" }}>
+      {loadError && <div role="alert" style={{ marginBottom: "10px", padding: "10px 14px", borderRadius: "8px", background: "#fff0f0", color: "#b91c1c", fontSize: "13px" }}>Could not load orders: {loadError}. Check the Supabase orders and order_items read policies.</div>}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, overflow: "hidden" }}>
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
@@ -113,48 +146,40 @@ export default function StaffOrdersPage() {
             <p style={{ color: "#a89080", fontSize: "12px", margin: 0 }}>{filtered.length} of {orders.length} · Pickup & Delivery</p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", background: "#fff", borderRadius: "8px", padding: "7px 12px", boxShadow: "0 1px 4px rgba(0,0,0,0.06)", width: "220px" }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#a89080" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
             <input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder="Search name or ID..." style={{ border: "none", outline: "none", fontSize: "12px", color: "#333", background: "transparent", width: "100%" }} />
           </div>
         </div>
 
-        {/* Type filter */}
-        <div style={{ display: "flex", gap: "6px", marginBottom: "8px" }}>
-          {TYPE_FILTERS.map((t) => {
-            const count = t === "All Types" ? orders.length : orders.filter((o) => o.order_type === t).length;
-            const color = t === "pickup" ? "#6366f1" : t === "delivery" ? "#f97316" : "#555";
-            return (
-              <button key={t} onClick={() => { setTypeFilter(t); setPage(1); }} style={{
-                padding: "5px 14px", borderRadius: "20px", border: "none", cursor: "pointer",
-                fontSize: "11px", fontWeight: 700, whiteSpace: "nowrap",
-                background: typeFilter === t ? color : "#fff",
-                color: typeFilter === t ? "#fff" : color,
-                boxShadow: typeFilter === t ? "none" : "0 1px 4px rgba(0,0,0,0.06)",
-                textTransform: "capitalize",
-              }}>
-                {t === "pickup" ? "🏪 Pickup" : t === "delivery" ? "🛵 Delivery" : "All Types"} ({count})
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Status filter */}
-        <div style={{ display: "flex", gap: "5px", marginBottom: "12px", overflowX: "auto", paddingBottom: "2px" }}>
-          {FILTERS.map((f) => {
-            const count = f === "All" ? orders.length : orders.filter((o) => o.status === f).length;
-            return (
-              <button key={f} onClick={() => { setFilter(f); setPage(1); }} style={{
-                padding: "5px 12px", borderRadius: "20px", border: "none", cursor: "pointer",
-                fontSize: "11px", fontWeight: 700, whiteSpace: "nowrap", flexShrink: 0,
-                background: filter === f ? ACCENT : "#fff",
-                color: filter === f ? "#fff" : "#555",
-                boxShadow: filter === f ? "none" : "0 1px 4px rgba(0,0,0,0.06)",
-                textTransform: "capitalize",
-              }}>
-                {f.replace("_", " ")} ({count})
-              </button>
-            );
-          })}
+        {/* Status filters and order type selector */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "12px", minWidth: 0 }}>
+          <div style={{ display: "flex", gap: "5px", overflowX: "auto", paddingBottom: "2px", minWidth: 0 }}>
+            {FILTERS.map((f) => {
+              const count = f === "All" ? orders.length : orders.filter((o) => o.status === f).length;
+              return (
+                <button key={f} onClick={() => { setFilter(f); setPage(1); }} style={{
+                  padding: "5px 12px", borderRadius: "20px", border: "none", cursor: "pointer",
+                  fontSize: "11px", fontWeight: 700, whiteSpace: "nowrap", flexShrink: 0,
+                  background: filter === f ? ACCENT : "#fff",
+                  color: filter === f ? "#fff" : "#555",
+                  boxShadow: filter === f ? "none" : "0 1px 4px rgba(0,0,0,0.06)",
+                  textTransform: "capitalize",
+                }}>
+                  {f.replace("_", " ")} ({count})
+                </button>
+              );
+            })}
+          </div>
+          <select aria-label="Filter by order type" value={typeFilter} onChange={(e) => { setTypeFilter(e.target.value); setPage(1); }} style={{
+            flex: "0 0 auto", minWidth: "165px", height: "34px", padding: "0 28px 0 10px",
+            border: "1px solid #e8ddd4", borderRadius: "8px", background: "#fff", color: "#493526",
+            fontSize: "11px", fontWeight: 700, cursor: "pointer",
+          }}>
+            {TYPE_FILTERS.map((t) => {
+              const count = t === "All Types" ? orders.length : orders.filter((o) => o.order_type === t).length;
+              const label = t === "pickup" ? "Pickup" : t === "delivery" ? "Delivery" : "All Types";
+              return <option key={t} value={t}>{label} ({count})</option>;
+            })}
+          </select>
         </div>
 
         {/* Order cards */}
@@ -179,9 +204,9 @@ export default function StaffOrdersPage() {
                     <span style={{ fontSize: "12px", fontWeight: 800, padding: "3px 10px", borderRadius: "6px", background: osc.bg, color: osc.text, textTransform: "capitalize" }}>{o.status.replace("_", " ")}</span>
                     <span style={{ fontWeight: 900, fontSize: "14px", color: "#1a1008" }}>#{o.id.slice(0, 8).toUpperCase()}</span>
                     <span style={{ fontSize: "11px", fontWeight: 700, padding: "3px 8px", borderRadius: "6px", background: isPickup ? "#ede9fe" : "#fff7ed", color: isPickup ? "#6366f1" : "#f97316" }}>
-                      {isPickup ? "🏪 Pickup" : "🛵 Delivery"}
+                      {isPickup ? "Pickup" : "Delivery"}
                     </span>
-                    <span style={{ fontSize: "11px", color: "#a89080" }}>🕐 {timeAgo}</span>
+                    <span style={{ fontSize: "11px", color: "#a89080" }}>{timeAgo}</span>
                   </div>
                   <div style={{ fontWeight: 700, fontSize: "14px", color: "#374151", marginBottom: "4px" }}>{o.user_accounts?.full_name || "Guest"}</div>
                   <div style={{ fontSize: "12px", color: "#6b7280", display: "flex", gap: "10px", flexWrap: "wrap" }}>
@@ -201,10 +226,10 @@ export default function StaffOrdersPage() {
                         {ACTION_LABEL[nextStatus]}
                       </button>
                     )}
-                    {o.payment_status === "unpaid" && (
+                    {o.payment_status === "unpaid" && canMarkOrderPaid(o) && (
                       <button onClick={(e) => { e.stopPropagation(); handleMarkPaid(o.id); }}
                         style={{ background: "#f0fdf4", color: "#22c55e", border: "none", borderRadius: "8px", padding: "7px 10px", fontWeight: 600, fontSize: "12px", cursor: "pointer" }}>
-                        Paid
+                        Mark Paid
                       </button>
                     )}
                     <button onClick={(e) => { e.stopPropagation(); setSelected(isSelected ? null : o); }}
@@ -235,27 +260,28 @@ export default function StaffOrdersPage() {
         <div style={{ position: "fixed", top: 0, right: 0, width: "400px", height: "100vh", background: "#fff", boxShadow: "-4px 0 24px rgba(0,0,0,0.12)", display: "flex", flexDirection: "column", zIndex: 200 }}>
           <div style={{ padding: "18px 20px", borderBottom: "1px solid #f1ebe5", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ fontWeight: 800, fontSize: "16px", color: "#1a1008" }}>Order Details</div>
-            <button onClick={() => setSelected(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#a89080", fontSize: "18px" }}>✕</button>
+            <button onClick={() => setSelected(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#a89080", fontSize: "12px", fontWeight: 700 }}>Close</button>
           </div>
           <div style={{ flex: 1, overflowY: "auto", padding: "18px 20px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
               <span style={{ fontWeight: 900, fontSize: "16px", color: ACCENT }}>#{selected.id.slice(0, 8).toUpperCase()}</span>
               <span style={{ fontSize: "11px", fontWeight: 800, padding: "3px 8px", borderRadius: "6px", background: sc.bg, color: sc.text, textTransform: "capitalize" }}>{selected.status.replace("_", " ")}</span>
               <span style={{ fontSize: "11px", fontWeight: 700, padding: "3px 8px", borderRadius: "6px", background: selected.order_type === "pickup" ? "#ede9fe" : "#fff7ed", color: selected.order_type === "pickup" ? "#6366f1" : "#f97316" }}>
-                {selected.order_type === "pickup" ? "🏪 Pickup" : "🛵 Delivery"}
+                {selected.order_type === "pickup" ? "Pickup" : "Delivery"}
               </span>
             </div>
             <div style={{ fontSize: "11px", color: "#a89080", marginBottom: "16px" }}>{new Date(selected.created_at).toLocaleString()}</div>
 
             <Section title="Customer">
-              <InfoRow icon="👤" text={selected.user_accounts?.full_name || "Guest"} />
-              <InfoRow icon="📧" text={selected.user_accounts?.email || "—"} />
+              <InfoRow text={selected.user_accounts?.full_name || "Guest"} />
+              <InfoRow text={selected.user_accounts?.email || "—"} />
+              {selected.contact_number && <InfoRow text={selected.contact_number} />}
             </Section>
 
             {selected.delivery_address_snapshot && (
               <Section title="Delivery Address">
                 <div style={{ background: "#fdf6f0", border: "1px solid #e8ddd4", borderRadius: "8px", padding: "10px 12px", fontSize: "13px", color: "#374151" }}>
-                  📍 {selected.delivery_address_snapshot}
+                  {selected.delivery_address_snapshot}
                 </div>
               </Section>
             )}
@@ -268,8 +294,9 @@ export default function StaffOrdersPage() {
 
             <Section title="Items">
               {selected.order_items?.map((item) => (
-                <div key={item.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                <div key={item.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
                   <div>
+                    {item.image_url ? <img src={item.image_url} alt="" style={{ width: 52, height: 52, objectFit: "cover", borderRadius: 8, marginBottom: 5 }} /> : null}
                     <div style={{ fontWeight: 700, fontSize: "13px", color: "#1a1008" }}>{item.menu_item_name}</div>
                     <div style={{ fontSize: "11px", color: "#a89080" }}>Qty: {item.quantity} × {peso(item.unit_price)}</div>
                   </div>
@@ -277,6 +304,15 @@ export default function StaffOrdersPage() {
                 </div>
               ))}
             </Section>
+
+            {selected.order_reviews?.[0] && <Section title="Customer Review">
+              <div style={{ fontSize: 13, color: "#665344" }}>Rating: {selected.order_reviews[0].rating} / 5</div>
+              {selected.order_reviews[0].would_order_again !== null && <div style={{ marginTop: 5, fontSize: 12, color: "#665344" }}>{selected.order_reviews[0].would_order_again ? "Would order again" : "Would not order again"}</div>}
+              {selected.order_reviews[0].comment && <p style={{ marginTop: 8, color: "#665344", fontSize: 13 }}>{selected.order_reviews[0].comment}</p>}
+            </Section>}
+            {selected.order_items.some((item) => item.order_item_reviews?.length) && <Section title="Item Ratings">
+              {selected.order_items.map((item) => item.order_item_reviews?.[0] && <p key={item.id} style={{ marginTop: 6, color: "#776555", fontSize: 12 }}>{item.menu_item_name}: {item.order_item_reviews[0].liked ? "Liked" : "Disliked"}</p>)}
+            </Section>}
 
             <Section title="Summary">
               {selected.delivery_fee > 0 && (
@@ -299,13 +335,19 @@ export default function StaffOrdersPage() {
           </div>
 
           <div style={{ padding: "14px 20px", borderTop: "1px solid #f1ebe5", display: "flex", flexDirection: "column", gap: "8px" }}>
+            {["confirmed", "preparing", "ready", "out_for_delivery", "delivered"].includes(selected.status) && (
+              <button onClick={() => setReceipt({ ...selected, table_number: null, customer_name: selected.user_accounts?.full_name || "Guest", customer_email: selected.user_accounts?.email, delivery_address: selected.delivery_address_snapshot, order_items: selected.order_items })}
+                style={{ width: "100%", background: "#fdf6f0", color: ACCENT, border: "1px solid #e8ddd4", borderRadius: "8px", padding: "11px", fontWeight: 700, fontSize: "13px", cursor: "pointer" }}>
+                View / Print Receipt
+              </button>
+            )}
             {getNextStatus(selected) && (
               <button onClick={() => handleStatus(selected.id, selected.order_type, getNextStatus(selected)!)} disabled={updating}
                 style={{ width: "100%", background: ACCENT, color: "#fff", border: "none", borderRadius: "8px", padding: "13px", fontWeight: 800, fontSize: "14px", cursor: "pointer" }}>
                 {ACTION_LABEL[getNextStatus(selected)!]}
               </button>
             )}
-            {selected.payment_status === "unpaid" && (
+            {selected.payment_status === "unpaid" && canMarkOrderPaid(selected) && (
               <button onClick={() => handleMarkPaid(selected.id)}
                 style={{ width: "100%", background: "#f0fdf4", color: "#22c55e", border: "1px solid #bbf7d0", borderRadius: "8px", padding: "11px", fontWeight: 700, fontSize: "13px", cursor: "pointer" }}>
                 Mark as Paid
@@ -320,6 +362,7 @@ export default function StaffOrdersPage() {
           </div>
         </div>
       )}
+      {receipt && <StoreReceipt order={receipt} onClose={() => setReceipt(null)} />}
     </div>
   );
 }
@@ -332,6 +375,6 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     </div>
   );
 }
-function InfoRow({ icon, text }: { icon: string; text: string }) {
-  return <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", fontSize: "13px", color: "#374151" }}><span>{icon}</span><span>{text}</span></div>;
+function InfoRow({ text }: { text: string }) {
+  return <div style={{ marginBottom: "6px", fontSize: "13px", color: "#374151" }}>{text}</div>;
 }
