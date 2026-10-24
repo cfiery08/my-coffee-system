@@ -9,7 +9,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { useCart } from "@/lib/CartContext";
 import { useAuth } from "@/lib/AuthContext";
 
-type MenuItem = { id: string; name: string; description: string; price: number; image_url: string | null; available: boolean };
+type MenuItem = { id: string; name: string; description: string; price: number; image_url: string | null; is_available: boolean; available: boolean };
 
 export default function Home() {
   const [featured, setFeatured] = useState<MenuItem[]>([]);
@@ -30,15 +30,20 @@ export default function Home() {
   useEffect(() => {
     supabase
       .from("menu_items")
-      .select("id, name, description, price, image_url")
+      .select("id, name, description, price, image_url, is_available")
       .eq("is_featured", true)
-      .eq("is_available", true)
-      .limit(4)
       .then(async ({ data }) => {
         const rows = data ?? [];
-        const { data: unavailableRows } = await supabase.rpc("get_unavailable_menu_item_ids", { p_menu_item_ids: rows.map((item) => item.id) });
+        const [{ data: unavailableRows }, { data: lowStockRows }] = await Promise.all([
+          supabase.rpc("get_unavailable_menu_item_ids", { p_menu_item_ids: rows.map((item) => item.id) }),
+          supabase.rpc("get_low_stock_menu_item_ids", { p_menu_item_ids: rows.map((item) => item.id) }),
+        ]);
         const unavailableIds = new Set((unavailableRows ?? []).map((row: { menu_item_id: string }) => row.menu_item_id));
-        setFeatured(rows.map((item) => ({ ...item, available: !unavailableIds.has(item.id) })));
+        const lowStockIds = new Set((lowStockRows ?? []).map((row: { menu_item_id: string }) => row.menu_item_id));
+        setFeatured(rows.filter((item) => !lowStockIds.has(item.id)).slice(0, 4).map((item) => ({
+          ...item,
+          available: item.is_available === true && !unavailableIds.has(item.id),
+        })));
       });
   }, []);
 

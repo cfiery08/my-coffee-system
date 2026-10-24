@@ -10,7 +10,7 @@ import { useCart } from "@/lib/CartContext";
 import { useAuth } from "@/lib/AuthContext";
 
 type Category = { id: string; name: string };
-type MenuItem = { id: string; name: string; description: string; price: number; image_url: string | null; category_id: string; available: boolean };
+type MenuItem = { id: string; name: string; description: string; price: number; image_url: string | null; category_id: string; is_available: boolean; available: boolean };
 type MenuReviewSummary = { thumbs_up: number; thumbs_down: number };
 type PublicReview = { customer_name: string; is_own?: boolean; rating: number; would_order_again: boolean | null; comment: string; created_at: string };
 
@@ -40,21 +40,26 @@ export default function MenuPage() {
     async function load() {
       const [{ data: cats }, { data: menuItems }] = await Promise.all([
         supabase.from("categories").select("id, name").eq("is_active", true).order("sort_order"),
-        supabase.from("menu_items").select("id, name, description, price, image_url, category_id").eq("is_available", true),
+        supabase.from("menu_items").select("id, name, description, price, image_url, category_id, is_available"),
       ]);
 
       const rows = menuItems ?? [];
-      const [{ data: unavailableRows }, { data: itemReviewRows }] = await Promise.all([
+      const [{ data: unavailableRows }, { data: lowStockRows }, { data: itemReviewRows }] = await Promise.all([
         supabase.rpc("get_unavailable_menu_item_ids", { p_menu_item_ids: rows.map((item) => item.id) }),
+        supabase.rpc("get_low_stock_menu_item_ids", { p_menu_item_ids: rows.map((item) => item.id) }),
         supabase.rpc("get_menu_item_review_summary", { p_menu_item_ids: rows.map((item) => item.id) }),
       ]);
       const unavailableIds = new Set((unavailableRows ?? []).map((row: { menu_item_id: string }) => row.menu_item_id));
+      const lowStockIds = new Set((lowStockRows ?? []).map((row: { menu_item_id: string }) => row.menu_item_id));
       const summaryMap: Record<string, MenuReviewSummary> = {};
       (itemReviewRows ?? []).forEach((row: { menu_item_id: string; thumbs_up: number; thumbs_down: number }) => {
         summaryMap[row.menu_item_id] = { thumbs_up: Number(row.thumbs_up), thumbs_down: Number(row.thumbs_down) };
       });
       setCategories(cats ?? []);
-      setItems(rows.map((item) => ({ ...item, available: !unavailableIds.has(item.id) })));
+      setItems(rows.filter((item) => !lowStockIds.has(item.id)).map((item) => ({
+        ...item,
+        available: item.is_available === true && !unavailableIds.has(item.id),
+      })));
       setReviewSummary(summaryMap);
       setLoading(false);
     }
